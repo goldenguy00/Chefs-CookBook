@@ -1,9 +1,6 @@
 using BepInEx;
 using BepInEx.Logging;
 using R2API;
-using RoR2;
-using UnityEngine;
-using UnityEngine.AddressableAssets;
 
 namespace CookBook
 {
@@ -20,16 +17,19 @@ namespace CookBook
         public const string PluginName = "CookBook";
         public const string PluginVersion = "1.0.0";
 
-        internal static ManualLogSource Log; // global logger
+        internal static ManualLogSource Log;
         private CraftPlanner _planner; // crafting planner
 
-        // Run at game initialization.
         public void Awake()
         {
             Log = Logger;
             Log.LogInfo("CookBook: Awake()");
 
             RecipeProvider.Init(Log); // Parse all chef recipe rules
+
+            // TODO: initialize settings ui and pull maxdepth from it
+            // also allow maxdepth to be changed dynamically
+
             _planner = new CraftPlanner(RecipeProvider.Recipes, maxDepth: 3);
             ChefStateController.Init(Log, _planner); // Initialize chef/state logic
         }

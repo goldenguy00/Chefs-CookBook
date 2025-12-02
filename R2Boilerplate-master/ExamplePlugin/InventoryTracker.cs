@@ -34,15 +34,29 @@ namespace CookBook
 
         }
 
+        //--------------------------------------- State Control ----------------------------------------
         internal static void Enable()
         {
             if (_enabled)
                 return;
 
             _enabled = true;
+
+            CharacterBody.onBodyInventoryChangedGlobal += OnBodyInventoryChanged; // subscribe to inventory updates
+            CharacterBody.onBodyStartGlobal += OnBodyStart; // subscribe for character initialization
+
+            // clear stale user
+            _localInventory = null;
+            _stacks = null;
+
             _log.LogInfo("InventoryTracker.Enable()");
 
-            CharacterBody.onBodyInventoryChangedGlobal += OnBodyInventoryChanged;
+
+            if (TryBindFromExistingBodies())
+            {
+                CharacterBody.onBodyStartGlobal -= OnBodyStart;
+                _log.LogInfo("InventoryTracker: late binding on Enable(), unsubscribed from onBodyStartGlobal");
+            }
         }
 
         internal static void Disable()
@@ -53,51 +67,139 @@ namespace CookBook
             _enabled = false;
             _log.LogInfo("InventoryTracker.Disable()");
 
-            CharacterBody.onBodyInventoryChangedGlobal -= OnBodyInventoryChanged;
+            CharacterBody.onBodyInventoryChangedGlobal -= OnBodyInventoryChanged; // remove subscription to inventory updates
+            CharacterBody.onBodyStartGlobal -= OnBodyStart; // remove subscription to character initialization
 
+            // clear stale user
+            _localInventory = null;
+            _stacks = null;
         }
 
+        //--------------------------------------- Event Logic ----------------------------------------
         /// <summary>
-        /// Called by RoR2 whenever ANY body's inventory changes.
-        /// We filter it down to just the local player's body.
+        /// bind the first time we see the local player's body
         /// </summary>
-        private static void OnBodyInventoryChanged(CharacterBody body) {
-            if (body == null || body.inventory == null)
+        private static void OnBodyStart(CharacterBody body)
+        {
+            if (!_enabled || body == null)
+                return;
+
+            var master = body.master;
+            if (!master)
+                return;
+
+            var pcmc = master.playerCharacterMasterController;
+            if (!pcmc)
+                return;
+
+            var networkUser = pcmc.networkUser;
+            if (!networkUser)
                 return;
 
             var localUser = GetLocalUser();
-            if (localUser == null || localUser.cachedBody == null)
+            if (networkUser.localUser != localUser)
                 return;
 
-            var localMaster = localUser.cachedBody.master;
-            if (localMaster == null)
+            // Only care about the local player's body.
+            if (networkUser.localUser != localUser)
                 return;
-
-            // handle non localuser cases
-            if (body.master != localMaster)
-            {
-                return;
-            }
 
             var inv = body.inventory;
+            if (inv == null)
+                return;
 
-            if (_localInventory == null)
+            _log.LogInfo("InventoryTracker: bound to local player inventory (OnBodyStart event)");
+            _log.LogInfo("InventoryTracker: unsubscribed from onBodyStartGlobal (binding complete)");
+            SnapshotFromInventory(inv);
+
+            CharacterBody.onBodyStartGlobal -= OnBodyStart;
+            return;
+        }
+
+        /// <summary>
+        /// Called by RoR2 whenever any body's inventory changes 
+        /// </summary>
+        private static void OnBodyInventoryChanged(CharacterBody body)
+        {
+            if (!_enabled || body == null || body.inventory == null)
+                return;
+
+            if (_localInventory != null)
             {
-                _localInventory = inv;
-                _log.LogInfo("InventoryTracker: bound to local player inventory (via CharacterBody event)");
+                if (!ReferenceEquals(body.inventory, _localInventory))
+                {
+                    return; // Ignore non-local inventory changes
+                }
+
+                _log.LogDebug("[InventoryTracker] Local inventory changed, refreshing snapshot");
+                SnapshotFromInventory(_localInventory);
+                return;
             }
-            
-            const int len = (int)ItemIndex.Count;
-             
-            // Build or refresh the snapshot.
+        }
+
+        //----------------------------------- Fallback Binding -----------------------------------
+        private static bool TryBindFromExistingBodies()
+        {
+            var localUser = GetLocalUser();
+            if (localUser == null)
+            {
+                _log.LogDebug("[InventoryTracker] TryBindFromExistingBodies: no LocalUsers present");
+                return false;
+            }
+
+            // iterate over all existing bodies to find local player
+            foreach (var body in CharacterBody.readOnlyInstancesList)
+            {
+                if (!body || body.inventory == null)
+                    continue;
+
+                var master = body.master;
+                if (!master)
+                    continue;
+
+                var pcmc = master.playerCharacterMasterController;
+                if (!pcmc)
+                    continue;
+
+                var networkUser = pcmc.networkUser;
+                if (!networkUser)
+                    continue;
+
+                // Is this body controlled by our local user?
+                if (networkUser.localUser != localUser)
+                    continue;
+
+                _log.LogInfo($"InventoryTracker: bound via TryBindFromExistingBodies() on body {body.name}");
+                SnapshotFromInventory(body.inventory);
+                return true;
+            }
+
+            _log.LogDebug("[InventoryTracker] TryBindFromExistingBodies: no matching local body found.");
+            return false;
+        }
+
+
+        //--------------------------------------- Helpers ----------------------------------------
+
+        private static void SnapshotFromInventory(Inventory inv)
+        {
+            _localInventory = inv;
+
+            int len = ItemCatalog.itemCount;
+
+            // Build/refresh the snapshot
             if (_stacks == null || _stacks.Length != len)
+            {
                 _stacks = new int[len];
-
+            }
             for (int i = 0; i < len; i++)
+            {
                 _stacks[i] = inv.GetItemCount((ItemIndex)i);
+            }
 
+            // [DEBUG]: print the snapshot
+            _log.LogInfo("InventoryTracker: snapshot after change/bind:");
 
-            _log.LogInfo("InventoryTracker: snapshot after change:");
             for (int i = 0; i < len; i++)
             {
                 int count = _stacks[i];
@@ -110,7 +212,6 @@ namespace CookBook
 
                 _log.LogInfo($"  [Tracker] {name} x{count}");
             }
-
             OnInventoryChanged?.Invoke(_stacks);
         }
 

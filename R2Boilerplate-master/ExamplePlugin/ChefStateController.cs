@@ -2,7 +2,6 @@
 using UnityEngine;
 using RoR2;
 
-
 namespace CookBook
 {
     internal static class ChefStateController
@@ -10,7 +9,7 @@ namespace CookBook
         private static ManualLogSource _log;
         private static bool _initialized;
         private static CraftPlanner _planner;
-
+        private static bool _inChefStage;
 
         internal static void Init(ManualLogSource log, CraftPlanner planner)
         {
@@ -22,48 +21,69 @@ namespace CookBook
             _planner = planner;
 
             InventoryTracker.Init(log);
-            InventoryTracker.Enable();
+
+            Stage.onStageStartGlobal += OnStageStart;
+            Run.onRunDestroyGlobal += OnRunDestroy;
 
             log.LogInfo("ChefStateController.Init()");
-            RoR2Application.onUpdate += OnUpdate;
         }
 
-
-
-        /// Debug Functions. When F8 is pressed, log inventory contents
-        private static void OnUpdate()
+        //-------------------------------- Stage Tracking ----------------------------------
+        /// <summary>
+        /// called whenever a new Stage instance starts, use for scene-based system control
+        /// </summary>
+        private static void OnStageStart(Stage stage)
         {
-            if (Input.GetKeyDown(KeyCode.F8))
+            var sceneDef = stage ? stage.sceneDef : null;
+            var sceneName = sceneDef ? sceneDef.baseSceneName : "<null>";
+
+            _log.LogInfo($"ChefStateController.OnStageStart: {sceneName}");
+
+            if (IsChefStage(sceneDef))
             {
-                LogInventoryContents();
+                _log.LogInfo("Entering Chef stage, enabling InventoryTracker.");
+                InventoryTracker.Enable();
+                // TODO: hook Chef NPC interaction here.
+                // TODO: enable UI handling (invisible)
+            }
+            else
+            {
+                _log.LogInfo("Not Chef stage, disabling InventoryTracker.");
+                InventoryTracker.Disable();
+                // TODO: disable custom UI
             }
         }
-        
-        private static void LogInventoryContents()
+
+        //--------------------------------------- Helpers ----------------------------------------
+        /// <summary>
+        /// Check if the current SceneDef corresponds to the Chef stage
+        /// </summary>
+        private static bool IsChefStage(SceneDef sceneDef)
         {
-            var stacks = InventoryTracker.GetStacksCopy();
-            if (stacks == null)
-            {
-                _log.LogInfo("InventoryTracker has not bound to the local player yet");
-                return;
-            }
+            return sceneDef && sceneDef.baseSceneName == "computationalexchange";
+        }
 
-            _log.LogInfo("=== Current Inventory Items ===");
+        /// <summary>
+        /// Cleanup Chef State Tracker when the run ends
+        /// </summary>
+        private static void OnRunDestroy(Run run)
+        {
+            _log.LogInfo("Run ended -> disabling InventoryTracker and resetting Chef state.");
+            _inChefStage = false;
+            InventoryTracker.Disable();
+        }
 
-            for (int i = 0; i < stacks.Length; i++)
-            {
-                int count = stacks[i];
-                if (count <= 0)
-                    continue;
+        // TODO: Chef dialogue detection
+        // - Hook the Chef NPC’s interaction component
+        // - Detect when the player opens/closes that dialogue
+        // - Show/hide cookbook UI only while that dialogue is open
 
-                ItemIndex idx = (ItemIndex)i;
-                ItemDef def = ItemCatalog.GetItemDef(idx);
-                string name = def ? def.nameToken : idx.ToString();
-
-                _log.LogInfo($"{name} x{count}");
-            }
-
-            _log.LogInfo("=== End of Inventory ===");
+        /// <summary>
+        /// retrieve the current SceneDef (if any)
+        /// </summary>
+        internal static SceneDef GetCurrentScene()
+        {
+            return Stage.instance ? Stage.instance.sceneDef : null;
         }
     }
 }
