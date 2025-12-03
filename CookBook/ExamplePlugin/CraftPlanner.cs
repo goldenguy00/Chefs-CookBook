@@ -1,6 +1,7 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using BepInEx.Logging;
 using RoR2;
+using System;
+using System.Collections.Generic;
 
 namespace CookBook
 {
@@ -11,12 +12,14 @@ namespace CookBook
     {
         private readonly IReadOnlyList<ChefRecipe> _recipes;
         private readonly int _itemCount;
+        private readonly int _equipmentCount;
         private readonly int _maxDepth;
 
-
+        private static ManualLogSource _log;
 
         // Recipes grouped by result (item/equipment)
         private readonly Dictionary<ResultKey, List<ChefRecipe>> _recipesByResult = new();
+
         // all unique chains per result, deduped by input signature
         private readonly Dictionary<ResultKey, PlanEntry> _plans = new();
 
@@ -25,14 +28,17 @@ namespace CookBook
         /// </summary>
         internal IReadOnlyDictionary<ResultKey, PlanEntry> Plans => _plans;
 
-        public CraftPlanner(IReadOnlyList<ChefRecipe> recipes, int maxDepth)
+        /// <summary>
+        /// Creates a new CraftPlanner given a recipe list and max traversal depth.
+        /// </summary>
+        public CraftPlanner(IReadOnlyList<ChefRecipe> recipes, int maxDepth, ManualLogSource log)
         {
             _recipes = recipes ?? throw new ArgumentNullException(nameof(recipes));
             _maxDepth = maxDepth;
             _itemCount = ItemCatalog.itemCount;
-
-            BuildRecipeIndex();
-            RebuildPlans();
+            _equipmentCount = EquipmentCatalog.equipmentCount;
+            _log = log;
+            RebuildAllPlans();
         }
 
         // ------------------------ Public query API ---------------------------
@@ -52,18 +58,33 @@ namespace CookBook
         }
 
         /// <summary>
+        /// useful for externally triggering a dictionary rebuild if maxdepth is changed.
+        /// </summary>
+        internal void RebuildAllPlans()
+        {
+            _log.LogInfo($"ChefStateController: RebuildAllPlans() Building Recipe Index.");
+            BuildRecipeIndex();
+            _log.LogInfo($"ChefStateController: RebuildAllPlans() Finished building Recipe Index.");
+            _log.LogInfo($"ChefStateController: RebuildAllPlans() Building Plans.");
+            BuildPlans();
+            _log.LogInfo($"ChefStateController: RebuildAllPlans() Finished building Plans.");
+        }
+
+        /// <summary>
         /// Given a snapshot of item stacks (indexed by ItemCatalog.itemCount),
         /// compute all craftable results, up to the preconfigured _maxDepth.
         ///  currently only checks item costs.
-        /// TODO: add equipment tracking.
         /// </summary>
-        public List<CraftableEntry> ComputeCraftable(int[] startingStacks)
+        public List<CraftableEntry> ComputeCraftable(int[] itemStacks, int[] equipmentStacks)
         {
-            if (startingStacks == null)
-                throw new ArgumentNullException(nameof(startingStacks));
-
-            if (startingStacks.Length != _itemCount)
-                throw new ArgumentException($"startingStacks length {startingStacks.Length} != ItemCatalog.itemCount {_itemCount}");
+            if (itemStacks == null)
+            {
+                throw new ArgumentNullException(nameof(itemStacks));
+            }
+            if (equipmentStacks == null) 
+            {
+                throw new ArgumentNullException(nameof(equipmentStacks));
+            }
 
             var result = new List<CraftableEntry>();
 
@@ -76,7 +97,7 @@ namespace CookBook
 
                 foreach (var chain in plan.Chains)
                 {
-                    if (CanAffordChain(startingStacks, chain))
+                    if (CanAffordChain(itemStacks, equipmentStacks, chain))
                     {
                         affordableChains.Add(chain);
                     }
@@ -86,7 +107,6 @@ namespace CookBook
                 {
                     continue;
                 }
-
 
                 // sort by depth, ascending
                 affordableChains.Sort((a, b) => a.Depth.CompareTo(b.Depth));
@@ -102,36 +122,77 @@ namespace CookBook
 
                 result.Add(entry);
             }
-            //TODO:  sort primary item tier, secondary alphanumeric
+
+            // sort primary item tier, secondary alphanumeric
+            result.Sort(TierManager.CompareCraftableEntries);
+
+            DumpCraftables(result);
             return result;
+        }
+
+        private static void DumpCraftables(List<CraftableEntry> currentcraftables)
+        {
+            if (currentcraftables == null)
+            {
+                _log.LogInfo("=== Craftables = null (nothing to dump) ===");
+                return;
+            }
+
+            _log.LogInfo("=== DUMPING SORTED CRAFTABLES BEGIN ===");
+
+            foreach (var entry in currentcraftables)
+            {
+                string name;
+                if (entry.ResultKind == RecipeResultKind.Item)
+                {
+                    var def = ItemCatalog.GetItemDef(entry.ResultItem);
+                    name = def ? def.nameToken : entry.ResultItem.ToString();
+                }
+                else
+                {
+                    var def = EquipmentCatalog.GetEquipmentDef(entry.ResultEquipment);
+                    name = def ? def.nameToken : entry.ResultEquipment.ToString();
+                }
+
+                _log.LogInfo($"[{entry.ResultKind}] {name} | MinDepth={entry.MinDepth} | Chains={entry.Chains.Count}");
+
+                for (int i = 0; i < entry.Chains.Count; i++)
+                {
+                    var chain = entry.Chains[i];
+                    _log.LogInfo($"    Chain {i}: depth={chain.Depth}");
+                }
+            }
+
+            _log.LogInfo("=== DUMPING SORTED CRAFTABLES END ===");
         }
 
 
         // ------------------------ Private query Helpers ---------------------------
         /// <summary>
         /// Checks whether the given inventory satisfies the required external item costs for the specified chain.
-        /// TODO: add equipment support
         /// </summary>
-        private bool CanAffordChain(int[] startingStacks, RecipeChain chain)
+        private bool CanAffordChain(int[] itemStacks, int[] equipmentStacks, RecipeChain chain)
         {
-            var cost = chain.TotalItemCost;
-            if (cost == null || cost.Length == 0)
-                return true;
-
-            int len = Math.Min(startingStacks.Length, cost.Length);
-            for (int i = 0; i < len; i++)
+            var itemCost = chain.TotalItemCost;
+            for (int i = 0; i < itemCost.Length; i++)
             {
-                int need = cost[i];
-                if (need <= 0)
-                    continue;
+                int need = itemCost[i];
+                if (need > 0 && itemStacks[i] < need)
+                    return false;
+            }
 
-                if (startingStacks[i] < need)
+            foreach (var kvp in chain.TotalEquipmentCost)
+            {
+                var idx = kvp.Key;
+                int need = kvp.Value;
+
+                int have = equipmentStacks[(int)idx];
+                if (have < need)
                     return false;
             }
 
             return true;
         }
-
 
         // ------------------------ Internal plan types ---------------------------
         /// <summary>
@@ -180,6 +241,7 @@ namespace CookBook
         {
             public readonly (ItemIndex index, int count)[] Items;
             public readonly (EquipmentIndex index, int count)[] Equipment;
+
             public InputSignature(
                 List<(ItemIndex index, int count)> items,
                 List<(EquipmentIndex index, int count)> equipment)
@@ -294,7 +356,7 @@ namespace CookBook
             }
         }
 
-        private void RebuildPlans()
+        private void BuildPlans()
         {
             _plans.Clear();
 
@@ -398,6 +460,12 @@ namespace CookBook
                 }
             }
 
+            // If this chain requires no external resources, it's not useful for the player
+            if (externalItems.Count == 0 && externalEquip.Count == 0)
+            {
+                return;
+            }
+
             // Sort by canonical signature (dedupe)
             externalItems.Sort((a, b) => a.Item1.CompareTo(b.Item1));
             externalEquip.Sort((a, b) => a.Item1.CompareTo(b.Item1));
@@ -423,7 +491,6 @@ namespace CookBook
 
             var newChain = new RecipeChain(chain, totalItemCost, eqCost);
 
-
             // keep only the shallowest chain per signature
             if (bestBySignature.TryGetValue(sig, out var existing))
             {
@@ -436,6 +503,18 @@ namespace CookBook
             {
                 bestBySignature[sig] = newChain;
             }
+
+            // [DEBUG] : remove when done
+            if (chain.Count <= 4) // avoid insane spam; tune as needed
+            {
+                var rk = plan.Result;
+                string targetName = rk.Kind == RecipeResultKind.Item
+                    ? ItemCatalog.GetItemDef(rk.Item)?.nameToken ?? rk.Item.ToString()
+                    : EquipmentCatalog.GetEquipmentDef(rk.Equipment)?.nameToken ?? rk.Equipment.ToString();
+
+                _log.LogDebug($"[Planner] New chain depth={chain.Count} for {targetName}, external items={externalItems.Count}, equip={externalEquip.Count}");
+            }
+
         }
 
         private void DFS(
@@ -503,6 +582,13 @@ namespace CookBook
             // fill plan.Chains
             plan.Chains.Clear();
             plan.Chains.AddRange(bestBySignature.Values);
+
+            string targetName =
+            target.Kind == RecipeResultKind.Item
+                ? (ItemCatalog.GetItemDef(target.Item)?.nameToken ?? target.Item.ToString())
+                : (EquipmentCatalog.GetEquipmentDef(target.Equipment)?.nameToken ?? target.Equipment.ToString());
+
+            _log.LogDebug($"[Planner] Target {targetName} ({target.Kind}): {plan.Chains.Count} deduped chains.");
         }
     }
 }
