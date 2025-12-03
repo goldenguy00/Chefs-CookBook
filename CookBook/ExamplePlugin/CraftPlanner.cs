@@ -126,7 +126,7 @@ namespace CookBook
             // sort primary item tier, secondary alphanumeric
             result.Sort(TierManager.CompareCraftableEntries);
 
-            DumpCraftables(result);
+            // DumpCraftables(result);
             return result;
         }
 

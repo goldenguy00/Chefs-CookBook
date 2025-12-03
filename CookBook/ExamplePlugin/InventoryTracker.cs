@@ -224,6 +224,7 @@ namespace CookBook
             _snapshot = new InventorySnapshot(itemstacks, equipmentstacks);
 
             // [DEBUG]: print the snapshot
+            /*
             _log.LogDebug("InventoryTracker: snapshot after change/bind:");
 
             _log.LogDebug("InventoryTracker: Item Inventory:");
@@ -253,6 +254,7 @@ namespace CookBook
 
                 _log.LogDebug($"  [Tracker] {name} x{count}");
             }
+            */
 
             OnInventoryChanged?.Invoke(clone(itemstacks), clone(equipmentstacks));
         }
