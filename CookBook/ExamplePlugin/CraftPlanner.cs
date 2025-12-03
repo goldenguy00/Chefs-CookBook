@@ -503,18 +503,6 @@ namespace CookBook
             {
                 bestBySignature[sig] = newChain;
             }
-
-            // [DEBUG] : remove when done
-            if (chain.Count <= 4) // avoid insane spam; tune as needed
-            {
-                var rk = plan.Result;
-                string targetName = rk.Kind == RecipeResultKind.Item
-                    ? ItemCatalog.GetItemDef(rk.Item)?.nameToken ?? rk.Item.ToString()
-                    : EquipmentCatalog.GetEquipmentDef(rk.Equipment)?.nameToken ?? rk.Equipment.ToString();
-
-                _log.LogDebug($"[Planner] New chain depth={chain.Count} for {targetName}, external items={externalItems.Count}, equip={externalEquip.Count}");
-            }
-
         }
 
         private void DFS(
