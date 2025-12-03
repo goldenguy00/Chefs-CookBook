@@ -3,35 +3,40 @@ using RoR2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using UnityEngine;
 
 namespace CookBook
 {
-    internal class TierManager
+    internal static class TierManager
     {
-        // Raised on tier order change
-        internal static event System.Action OnTierOrderChanged;
-
+        // ---------------------- Fields  ----------------------------
         private static bool _initialized;
         private static ManualLogSource _log;
+        private static readonly ItemTier[] DefaultOrder; 
+        private static readonly HashSet<ItemTier> _seenTiers ;
+        private static Dictionary<ItemTier, int> _orderMap;
 
-        private static Dictionary<ItemTier, int> _orderMap = new Dictionary<ItemTier, int>();
-        private static readonly HashSet<ItemTier> _seenTiers = new HashSet<ItemTier>();
+    // Events
+    internal static event System.Action OnTierOrderChanged;
 
-        // Default sorting order
-        private static readonly ItemTier[] DefaultOrder =
+        // ---------------------- Initialization  ----------------------------
+        static TierManager()
         {
-            ItemTier.Tier3,
-            ItemTier.Boss,
-            ItemTier.Tier2,
-            ItemTier.Tier1,
-            ItemTier.VoidTier3,
-            ItemTier.VoidTier2,
-            ItemTier.VoidTier1,
-            ItemTier.Lunar,
-            ItemTier.AssignedAtRuntime,
-            ItemTier.NoTier
-        };
+            DefaultOrder = new[]
+            {
+                ItemTier.Tier3,
+                ItemTier.Boss,
+                ItemTier.Tier2,
+                ItemTier.Tier1,
+                ItemTier.VoidTier3,
+                ItemTier.VoidTier2,
+                ItemTier.VoidTier1,
+                ItemTier.Lunar,
+                ItemTier.AssignedAtRuntime,
+                ItemTier.NoTier
+            };
+            _seenTiers = new HashSet<ItemTier>(DefaultOrder);
+            _orderMap = BuildMapFrom(DefaultOrder);
+        }
 
         internal static void Init(ManualLogSource log)
         {
@@ -44,50 +49,70 @@ namespace CookBook
             log.LogInfo("TierManager.Init()");
         }
 
-        static TierManager()
+        // ---------------------- Tier Events ----------------------------
+        internal static void OnTierOrderConfigChanged(object _, EventArgs __)
         {
-            _seenTiers = new HashSet<ItemTier>(DefaultOrder);
-            _orderMap = BuildMapFrom(DefaultOrder);
+            TierManager.SetOrder(TierManager.ParseTierOrder(CookBook.TierOrder.Value));
         }
 
-        private static Dictionary<ItemTier, int> BuildMapFrom(ItemTier[] arr)
-        {
-            var map = new Dictionary<ItemTier, int>(arr.Length);
-            for (int i = 0; i < arr.Length; i++)
-                map[arr[i]] = i;
-            return map;
-        }
-
+        // ---------------------- Runtime Helpers ----------------------------
         /// <summary>
-        /// Gets the integer rank for a given tier.
+        /// Collects all tiers used by any item in the ItemCatalog.
         /// </summary>
-        /// 
-        internal static int Rank(ItemTier tier)
+        internal static ItemTier[] DiscoverTiersFromCatalog() 
         {
-            _seenTiers.Add(tier);
-
-            // If explicitly mapped, use it
-            if (_orderMap.TryGetValue(tier, out int rank))
+            var set = new HashSet<ItemTier>(_seenTiers);
+            int len = ItemCatalog.itemCount;
+            for (int i = 0; i < len; i++)
             {
-                return rank; 
+                var def = ItemCatalog.GetItemDef((ItemIndex)i);
+                if (!def)
+                    continue;
+
+                set.Add(def.tier);
             }
 
-            // Default: unknown/modded tiers after natives
-            return _orderMap.Count + (int)tier;
+            // Record discovered tiers.
+            foreach (var t in set)
+            {
+                _seenTiers.Add(t);
+            }
+
+            return set.ToArray();
         }
 
         /// <summary>
-        /// Update the tier order
+        /// Convert an ItemTier[] ordering into the CSV format used by the config.
         /// </summary>
-        internal static void SetOrder(ItemTier[] newOrder)
+        internal static string ToCsv(ItemTier[] order)
         {
-            _orderMap = BuildMapFrom(newOrder);
-            OnTierOrderChanged?.Invoke();
+            return string.Join(",", order.Select(t => t.ToString()));
         }
 
-        internal static ItemTier[] GetAllKnownTiers()
+        /// <summary>
+        /// Merge the current config order with a discovered set of tiers.
+        /// Preserves config order.
+        /// Appends newly discovered tiers to the end.
+        /// </summary>
+        internal static ItemTier[] MergeOrder(ItemTier[] fromConfig, ItemTier[] discovered)
         {
-            return _seenTiers.ToArray();
+            var list = new List<ItemTier>(fromConfig.Length + discovered.Length);
+            var seen = new HashSet<ItemTier>();
+
+            foreach (var t in fromConfig)
+            {
+                if (seen.Add(t))
+                    list.Add(t);
+            }
+
+            foreach (var t in discovered)
+            {
+                if (seen.Add(t))
+                    list.Add(t);
+            }
+
+            // fallback
+            return list.Count > 0 ? list.ToArray() : DefaultOrder;
         }
 
         // ---------------------- Sorting Helpers ----------------------------
@@ -141,6 +166,63 @@ namespace CookBook
             string nameA = defA ? defA.nameToken : a.ToString();
             string nameB = defB ? defB.nameToken : b.ToString();
             return string.Compare(nameA, nameB, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Gets the integer rank for a given tier.
+        /// </summary>
+        /// 
+        internal static int Rank(ItemTier tier)
+        {
+            _seenTiers.Add(tier);
+
+            // If explicitly mapped, use it
+            if (_orderMap.TryGetValue(tier, out int rank))
+            {
+                return rank;
+            }
+
+            // Default: unknown/modded tiers after natives
+            return _orderMap.Count + (int)tier;
+        }
+
+        // ---------------------- Helpers ----------------------------
+        private static Dictionary<ItemTier, int> BuildMapFrom(ItemTier[] arr)
+        {
+            var map = new Dictionary<ItemTier, int>(arr.Length);
+            for (int i = 0; i < arr.Length; i++)
+                map[arr[i]] = i;
+            return map;
+        }
+
+        /// <summary>
+        /// Update the tier order
+        /// </summary>
+        internal static void SetOrder(ItemTier[] newOrder)
+        {
+            _orderMap = BuildMapFrom(newOrder);
+            OnTierOrderChanged?.Invoke();
+        }
+
+        internal static ItemTier[] GetAllKnownTiers()
+        {
+            return _seenTiers.ToArray();
+        }
+        internal static ItemTier[] ParseTierOrder(string csv)
+        {
+            if (string.IsNullOrWhiteSpace(csv))
+                return DefaultOrder;
+
+            var parts = csv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var list = new List<ItemTier>();
+            foreach (var p in parts)
+            {
+                if (Enum.TryParse<ItemTier>(p.Trim(), out var tier))
+                    list.Add(tier);
+            }
+
+            // Fall back if user nukes config
+            return list.Count > 0 ? list.ToArray() : DefaultOrder;
         }
     }
 }

@@ -6,32 +6,28 @@ using UnityEngine;
 
 namespace CookBook
 {
-    internal static class ChefStateController
+    internal static class StateController
     {
         private static ManualLogSource _log;
         private static CraftPlanner _planner;
         private static List<CraftPlanner.CraftableEntry> _lastCraftables = new List<CraftPlanner.CraftableEntry>();
-
-        private static bool _initialized;
         private static bool _subscribedInventoryHandler = false;
-
-        internal static event Action<List<CraftPlanner.CraftableEntry>> OnCraftablesUpdated;
+        private static bool _initialized = false;
 
         internal static void Init(ManualLogSource log)
         {
             if (_initialized)
                 return;
 
-            _initialized = true;
             _log = log;
+            InventoryTracker.Init(_log);
+            _initialized = true;
             _planner = null; // initialized once ready
-
-            InventoryTracker.Init(log);
-
+            
             Stage.onStageStartGlobal += OnStageStart;
             Run.onRunDestroyGlobal += OnRunDestroy;
 
-            log.LogInfo("ChefStateController.Init()");
+            _log.LogInfo("StateController.Init()");
         }
 
         //-------------------------------- State Tracking ----------------------------------
@@ -41,7 +37,6 @@ namespace CookBook
         private static void OnStageStart(Stage stage)
         {
             var sceneDef = stage ? stage.sceneDef : null;
-            var sceneName = sceneDef ? sceneDef.baseSceneName : "<null>";
 
             if (IsChefStage(sceneDef))
             {
@@ -54,7 +49,6 @@ namespace CookBook
                 }
 
                 InventoryTracker.Enable();
-
                 // TODO: hook Chef NPC interaction state
                 // TODO: hook into Chef UI and enable UI handling via CraftUI.cs
             }
@@ -69,6 +63,51 @@ namespace CookBook
         }
 
         /// <summary>
+        /// Called when RecipeProvider has finished building ChefRecipe list. also fired when recipe list rebuilt
+        /// </summary>
+        internal static void OnRecipesBuilt(System.Collections.Generic.IReadOnlyList<ChefRecipe> recipes)
+        {
+            _log.LogInfo($"CookBook: OnRecipesBuilt fired with {recipes.Count} recipes; (re)constructing CraftPlanner.");
+
+            var planner = new CraftPlanner(recipes, CookBook.MaxDepth.Value, _log);
+            StateController.SetPlanner(planner); // Hand a fresh planner to the state controller
+        }
+
+        private static void OnInventoryChanged(int[] itemStacks, int[] equipmentStacks)
+        {
+            if (_planner == null)
+            {
+                _log.LogDebug("StateController.OnInventoryChanged: planner not assigned yet, ignoring.");
+                return;
+            }
+            _planner.ComputeCraftable(itemStacks, equipmentStacks);
+        }
+
+        private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables)
+        {
+            _lastCraftables = craftables;
+
+            if (IsChefStage())
+            {
+                // TODO: fire UI event here for UI updates
+            }
+        }
+
+        internal static void OnTierOrderChanged()
+        {
+            if (_lastCraftables == null || _lastCraftables.Count == 0)
+                return;
+
+            if (!StateController.IsChefStage())
+                return;
+
+            // re-sort the existing list
+            _lastCraftables.Sort(TierManager.CompareCraftableEntries);
+
+            // TODO: fire UI event here for UI updates
+        }
+
+        /// <summary>
         /// Cleanup Chef State Tracker when the run ends
         /// </summary>
         private static void OnRunDestroy(Run run)
@@ -77,32 +116,30 @@ namespace CookBook
             InventoryTracker.Disable();
             InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
             _subscribedInventoryHandler = false;
+            _planner = null;
             _lastCraftables.Clear();
         }
 
-        private static void OnInventoryChanged(int[] itemStacks, int[] equipmentStacks)
-        {
-            if (_planner == null)
-            {
-                _log.LogDebug("ChefStateController.OnInventoryChanged: planner not assigned yet, ignoring.");
-                return;
-            }
-
-            _lastCraftables = _planner.ComputeCraftable(itemStacks, equipmentStacks);
-
-            OnCraftablesUpdated?.Invoke(_lastCraftables); // notify listeners that new craftables is built using invoke
-        }
-
-        //--------------------------------------- Helpers ----------------------------------------
+        //--------------------------------------- Planning Helpers ----------------------------------------
         /// <summary>
         /// Set the planner for a given StateController.
         /// </summary>
         internal static void SetPlanner(CraftPlanner planner)
         {
-            _planner = planner;
-            _log.LogInfo("ChefStateController.SetPlanner(): CraftPlanner assigned.");
+            if (_planner != null)
+            {
+                _planner.OnCraftablesUpdated -= OnCraftablesUpdated;
+            }
 
-            if (!IsChefStage())
+            _planner = planner; // overwrite stale planner
+            _log.LogInfo("StateController.SetPlanner(): CraftPlanner assigned.");
+
+            if (_planner != null)
+            {
+                _planner.OnCraftablesUpdated += OnCraftablesUpdated;
+            }
+
+            if (!IsChefStage()) 
             {
                 return;
             }
@@ -113,19 +150,21 @@ namespace CookBook
                 _subscribedInventoryHandler = true;
             }
             
+            // compute initial snapshot
             var itemstacks = InventoryTracker.GetItemStacksCopy();
             var equipmentstacks = InventoryTracker.GetEquipmentStacksCopy();
             if (itemstacks != null && equipmentstacks != null)
             {
-                _lastCraftables = _planner.ComputeCraftable(itemstacks, equipmentstacks);
-                _log.LogDebug($"ChefStateController: initial craftable entries = {_lastCraftables.Count}");
+                _planner.ComputeCraftable(itemstacks, equipmentstacks); // fires OnCraftablesUpdated, which then reassigns _lastCraftables
+                _log.LogDebug($"StateController: initial craftable entries = {_lastCraftables.Count}");
             }
             else
             {
-                _log.LogDebug("ChefStateController.SetPlanner(): Attempted setplanner, but inventory doesn't exist.");
+                _log.LogDebug("StateController.SetPlanner(): Attempted setplanner, but inventory doesn't exist.");
             }
         }
 
+        //--------------------------------------- Generic Helpers ----------------------------------------
         /// <summary>
         /// Check if the current SceneDef corresponds to the Chef stage
         /// </summary>

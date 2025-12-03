@@ -1,7 +1,6 @@
 ﻿using BepInEx.Logging;
 using RoR2;
 using System;
-using RoR2.ContentManagement;
 
 namespace CookBook
 {
@@ -10,18 +9,20 @@ namespace CookBook
     /// </summary>
     internal static class InventoryTracker
     {
+        // ---------------------- Fields  ----------------------------
         private static ManualLogSource _log;
         private static bool _initialized;
         private static bool _enabled;
-
-        // local player's inventory
         private static Inventory _localInventory;
         private static InventorySnapshot _snapshot;
 
+        // Events
         /// <summary>
-        /// Raised whenever an inventory's item counts change (do NOT mutate externally).
+        /// Do NOT mutate externally.
         /// </summary>
         internal static event Action<int[], int[]> OnInventoryChanged;
+
+        // ---------------------- Initialization  ----------------------------
 
         internal static void Init(ManualLogSource log)
         {
@@ -31,10 +32,12 @@ namespace CookBook
             _initialized = true;
             _log = log;
             _log.LogInfo("InventoryTracker.Init()");
-
         }
 
         //--------------------------------------- Status Control ----------------------------------------
+        /// <summary>
+        /// Refreshes and binds to the localuser.
+        /// </summary>
         internal static void Enable()
         {
             if (_enabled)
@@ -55,6 +58,9 @@ namespace CookBook
             }
         }
 
+        /// <summary>
+        /// Unsubscribes to character events and inventory changes, clears the localuser, and drains the snapshot to avoid stale reads.
+        /// </summary>
         internal static void Disable()
         {
             if (!_enabled)
@@ -74,7 +80,7 @@ namespace CookBook
 
         //----------------------------------- Binding Logic -----------------------------------
         /// <summary>
-        /// bind the first time we see the local player's body
+        /// Binds to localuser when body is spawned, ignoring other bodies.
         /// </summary>
         private static void OnBodyStart(CharacterBody body)
         {
@@ -106,8 +112,8 @@ namespace CookBook
                 return;
 
             CharacterBody.onBodyStartGlobal -= OnBodyStart;
-            _log.LogDebug("InventoryTracker: bound to local player inventory (OnBodyStart event)");
-            _log.LogInfo("InventoryTracker: unsubscribed from onBodyStartGlobal (binding complete)");
+            _log.LogDebug("InventoryTracker.OnBodyStart(): Bound to local player inventory (OnBodyStart event).");
+            _log.LogInfo("InventoryTracker.OnBodyStart(): Binding complete, unsubscribed from onBodyStartGlobal.");
 
             //rebind to local inventory, can occur if player fab gets altered or someone makes a poorly written mod
             RebindLocal(inv);
@@ -121,7 +127,7 @@ namespace CookBook
             var localUser = GetLocalUser();
             if (localUser == null)
             {
-                _log.LogDebug("[InventoryTracker] TryBindFromExistingBodies: no LocalUsers present");
+                _log.LogDebug("InventoryTracker.TryBindFromExistingBodies(): no LocalUsers present");
                 return false;
             }
 
@@ -147,14 +153,14 @@ namespace CookBook
                 if (networkUser.localUser != localUser)
                     continue;
 
-                _log.LogInfo($"InventoryTracker: late binding via TryBindFromExistingBodies() on body {body.name}");
+                _log.LogInfo($"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}.");
 
                 RebindLocal(body.inventory);
                 SnapshotFromInventory(_localInventory);
                 return true;
             }
 
-            _log.LogDebug("[InventoryTracker] TryBindFromExistingBodies: no matching local body found.");
+            _log.LogDebug("InventoryTracker.TryBindFromExistingBodies(): no matching local body found.");
             return false;
         }
 
@@ -176,15 +182,13 @@ namespace CookBook
         private static void OnLocalInventoryChanged()
         {
         if (!_enabled || _localInventory == null) 
-            {
-                return;
-            }
+        {
+            return;
+        }
 
-        _log.LogDebug("[InventoryTracker] Local inventory changed, refreshing snapshot");
+        _log.LogDebug("InventoryTracker.OnLocalInventoryChanged(): refreshing snapshot");
         SnapshotFromInventory(_localInventory);
         }
-        
-
         
         //--------------------------------------- Snapshot Handling ----------------------------------------
         private static void SnapshotFromInventory(Inventory inv)
@@ -222,41 +226,7 @@ namespace CookBook
                 }
             }
             _snapshot = new InventorySnapshot(itemstacks, equipmentstacks);
-
-            // [DEBUG]: print the snapshot
-            /*
-            _log.LogDebug("InventoryTracker: snapshot after change/bind:");
-
-            _log.LogDebug("InventoryTracker: Item Inventory:");
-            for (int i = 0; i < itemLen; i++)
-            {
-                int count = itemstacks[i];
-                if (count <= 0)
-                    continue;
-
-                ItemIndex idx = (ItemIndex)i;
-                ItemDef def = ItemCatalog.GetItemDef(idx);
-                string name = def ? def.nameToken : idx.ToString();
-
-                _log.LogDebug($"  [Tracker] {name} x{count}");
-            }
-
-            _log.LogDebug("InventoryTracker: Equipment Inventory:");
-            for (int i = 0; i < equipLen; i++)
-            {
-                int count = equipmentstacks[i];
-                if (count <= 0)
-                    continue;
-
-                EquipmentIndex idx = (EquipmentIndex)i;
-                EquipmentDef def = EquipmentCatalog.GetEquipmentDef(idx);
-                string name = def ? def.nameToken : idx.ToString();
-
-                _log.LogDebug($"  [Tracker] {name} x{count}");
-            }
-            */
-
-            OnInventoryChanged?.Invoke(clone(itemstacks), clone(equipmentstacks));
+            OnInventoryChanged?.Invoke(clone(itemstacks), clone(equipmentstacks)); // Notify listeners without mutating stacks.
         }
 
         //--------------------------------------- Snapshot Helpers ----------------------------------------

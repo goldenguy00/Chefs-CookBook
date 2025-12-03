@@ -1,13 +1,13 @@
 using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using R2API;
+using RoR2;
 
 namespace CookBook
 {
     [BepInDependency(LanguageAPI.PluginGUID, BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(ItemAPI.PluginGUID)]
-
-    // This attribute is required, and lists metadata for your plugin.
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 
     public class CookBook : BaseUnityPlugin
@@ -18,58 +18,67 @@ namespace CookBook
         public const string PluginVersion = "1.0.0";
 
         internal static ManualLogSource Log;
-        private CraftPlanner _planner; // crafting planner
         private const int DefaultMaxDepth = 3;
+
+        public static ConfigEntry<int> MaxDepth;
+        public static ConfigEntry<string> TierOrder;
 
         public void Awake()
         {
             Log = Logger;
             Log.LogInfo("CookBook: Awake()");
 
-            RecipeProvider.OnRecipesBuilt += OnRecipesBuilt; // subscribe to recipe completion event
-            RecipeProvider.Init(Log); // Parse all chef recipe rules
+            MaxDepth = Config.Bind(
+                "General",
+                "MaxDepth",
+                DefaultMaxDepth,
+                "Maximum crafting chain depth to explore when precomputing recipe plans."
+            );
+            TierOrder = Config.Bind(
+                "General",
+                "TierOrder",
+                "Tier3,Tier2,Tier1,Boss,Lunar,VoidTier3,VoidTier2,VoidTier1,AssignedAtRuntime,NoTier",
+                "Comma-separated tier order for sorting craftable items."
+            );
 
-            TierManager.Init(Log); 
-            TierManager.OnTierOrderChanged += OnTierOrderChanged; // subscribe to sort order update events
+            TierManager.Init(Log);
 
-            // TODO: Initialize settings UI via SettingsUI.cs
+            // discover any custom item tiers
+            ItemCatalog.availability.CallWhenAvailable(() => {
+                var defaultTiers = TierManager.ParseTierOrder(TierOrder.Value);
+                var merged = TierManager.MergeOrder(defaultTiers, TierManager.DiscoverTiersFromCatalog());
 
-            ChefStateController.Init(Log); // Initialize chef/state logic
-        }
-
-        private void OnTierOrderChanged()
-        {
-            if (_planner != null)
-            {
-                Logger.LogInfo("Tier order changed — rebuilding all CraftPlanner plans.");
-                _planner.RebuildAllPlans();
-
-                // If we're already in Chef stage, refresh craftables
-                if (ChefStateController.IsChefStage())
+                // push discovered tiers back into the config
+                string mergedCsv = TierManager.ToCsv(merged);
+                if (TierOrder.Value != mergedCsv)
                 {
-                    
-                    // safe to run Chef-specific plugin logic
+                    Log.LogInfo($"CookBook: updating TierOrder config to include newly discovered tiers: {mergedCsv}");
+                    TierOrder.Value = mergedCsv;
                 }
-            }
-        }
+                else
+                {
+                    // No new tiers; just apply the current order
+                    TierManager.SetOrder(merged);
+                }
+            });
 
+            // runtime events
+            TierOrder.SettingChanged += TierManager.OnTierOrderConfigChanged; // subscribe to sorting config change events
+            TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged; // subscribe to sort order update events
+            RecipeProvider.OnRecipesBuilt += StateController.OnRecipesBuilt; // subscribe to recipe completion event
 
-        /// <summary>
-        /// Called when RecipeProvider has finished building ChefRecipe list. also fired when recipe list rebuilt
-        /// </summary>
-        private void OnRecipesBuilt(System.Collections.Generic.IReadOnlyList<ChefRecipe> recipes)
-        {
-            Log.LogInfo($"CookBook: OnRecipesBuilt fired with {recipes.Count} recipes; (re)constructing CraftPlanner.");
-
-            // TODO: Pull maxdepth from settings.
-            _planner = new CraftPlanner(recipes, DefaultMaxDepth, Log);
-            ChefStateController.SetPlanner(_planner); // Hand a fresh planner to the state controller
+            // Init subsystems
+            // TODO: Initialize settings UI via SettingsUI.cs
+            RecipeProvider.Init(Log); // Parse all chef recipe rules
+            StateController.Init(Log); // Initialize chef/state logic
         }
 
         private void OnDestroy()
         {
-            // Clean up event subscription
-            RecipeProvider.OnRecipesBuilt -= OnRecipesBuilt;
+            // Clean up event subscriptions
+            RecipeProvider.OnRecipesBuilt -= StateController.OnRecipesBuilt;
+            TierManager.OnTierOrderChanged -= StateController.OnTierOrderChanged;
+            TierOrder.SettingChanged -= TierManager.OnTierOrderConfigChanged;
         }
     }
 }

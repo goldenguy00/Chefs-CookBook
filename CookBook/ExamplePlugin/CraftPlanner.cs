@@ -14,19 +14,17 @@ namespace CookBook
         private readonly int _itemCount;
         private readonly int _equipmentCount;
         private readonly int _maxDepth;
-
-        private static ManualLogSource _log;
-
-        // Recipes grouped by result (item/equipment)
-        private readonly Dictionary<ResultKey, List<ChefRecipe>> _recipesByResult = new();
-
-        // all unique chains per result, deduped by input signature
-        private readonly Dictionary<ResultKey, PlanEntry> _plans = new();
+        private readonly ManualLogSource _log;
+        private readonly Dictionary<ResultKey, List<ChefRecipe>> _recipesByResult = new(); // Recipes grouped by result (item/equipment)
+        private readonly Dictionary<ResultKey, PlanEntry> _plans = new(); // all unique chains per result, deduped by input signature
 
         /// <summary>
         /// Offline computed plans; keyed by desired result
         /// </summary>
         internal IReadOnlyDictionary<ResultKey, PlanEntry> Plans => _plans;
+
+        // events
+        internal event Action<List<CraftableEntry>> OnCraftablesUpdated;
 
         /// <summary>
         /// Creates a new CraftPlanner given a recipe list and max traversal depth.
@@ -62,12 +60,12 @@ namespace CookBook
         /// </summary>
         internal void RebuildAllPlans()
         {
-            _log.LogInfo($"ChefStateController: RebuildAllPlans() Building Recipe Index.");
+            _log.LogInfo($"StateController: RebuildAllPlans() Building Recipe Index.");
             BuildRecipeIndex();
-            _log.LogInfo($"ChefStateController: RebuildAllPlans() Finished building Recipe Index.");
-            _log.LogInfo($"ChefStateController: RebuildAllPlans() Building Plans.");
+            _log.LogInfo($"StateController: RebuildAllPlans() Finished building Recipe Index.");
+            _log.LogInfo($"StateController: RebuildAllPlans() Building Plans.");
             BuildPlans();
-            _log.LogInfo($"ChefStateController: RebuildAllPlans() Finished building Plans."); // add debug info for # of plans
+            _log.LogInfo($"StateController: RebuildAllPlans() Finished building Plans."); // add debug info for # of plans
         }
 
         /// <summary>
@@ -126,47 +124,10 @@ namespace CookBook
             // sort primary item tier, secondary alphanumeric
             result.Sort(TierManager.CompareCraftableEntries);
 
-            // DumpCraftables(result);
-            _log.LogDebug($"ChefStateController: ComputeCraftable -> {result.Count} entries from " + $"{itemStacks.Length} items / {equipmentStacks.Length} equipment.");
+            _log.LogDebug($"CraftPlanner.ComputeCraftable: {result.Count} entries from " + $"{itemStacks.Length} items / {equipmentStacks.Length} equipment.");
+            OnCraftablesUpdated?.Invoke(result); // notify listeners that new craftables is built using invoke
             return result;
         }
-
-        private static void DumpCraftables(List<CraftableEntry> currentcraftables)
-        {
-            if (currentcraftables == null)
-            {
-                _log.LogInfo("=== Craftables = null (nothing to dump) ===");
-                return;
-            }
-
-            _log.LogInfo("=== DUMPING SORTED CRAFTABLES BEGIN ===");
-
-            foreach (var entry in currentcraftables)
-            {
-                string name;
-                if (entry.ResultKind == RecipeResultKind.Item)
-                {
-                    var def = ItemCatalog.GetItemDef(entry.ResultItem);
-                    name = def ? def.nameToken : entry.ResultItem.ToString();
-                }
-                else
-                {
-                    var def = EquipmentCatalog.GetEquipmentDef(entry.ResultEquipment);
-                    name = def ? def.nameToken : entry.ResultEquipment.ToString();
-                }
-
-                _log.LogInfo($"[{entry.ResultKind}] {name} | MinDepth={entry.MinDepth} | Chains={entry.Chains.Count}");
-
-                for (int i = 0; i < entry.Chains.Count; i++)
-                {
-                    var chain = entry.Chains[i];
-                    _log.LogInfo($"    Chain {i}: depth={chain.Depth}");
-                }
-            }
-
-            _log.LogInfo("=== DUMPING SORTED CRAFTABLES END ===");
-        }
-
 
         // ------------------------ Private query Helpers ---------------------------
         /// <summary>

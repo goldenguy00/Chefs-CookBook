@@ -269,64 +269,6 @@ namespace CookBook
             }
             _recipesBuilt = true;
             _log.LogInfo($"RecipeProvider: built {_recipes.Count} recipes.");
-
-            if (_log != null && _recipes.Count > 0)
-            {
-                _log.LogDebug("RecipeProvider: Listing all loaded Chef recipes");
-
-                int index = 0;
-                foreach (var recipe in _recipes)
-                {
-                    string resultName;
-                    string resultType;
-
-                    if (recipe.ResultKind == RecipeResultKind.Item)
-                    {
-                        var def = ItemCatalog.GetItemDef(recipe.ResultItem);
-                        resultName = def ? def.nameToken : recipe.ResultItem.ToString();
-                        resultType = "Item";
-                    }
-                    else
-                    {
-                        var def = EquipmentCatalog.GetEquipmentDef(recipe.ResultEquipment);
-                        resultName = def ? def.nameToken : recipe.ResultEquipment.ToString();
-                        resultType = "Equipment";
-                    }
-
-                    _log.LogDebug($"[{index}] Result: {resultName} ({resultType}), Count: {recipe.ResultCount}");
-
-                    if (recipe.Ingredients != null && recipe.Ingredients.Length > 0)
-                    {
-                        foreach (var ing in recipe.Ingredients)
-                        {
-                            string ingName;
-
-                            if (ing.Kind == IngredientKind.Item)
-                            {
-                                var idef = ItemCatalog.GetItemDef(ing.Item);
-                                ingName = idef ? idef.nameToken : ing.Item.ToString();
-                            }
-                            else
-                            {
-                                var edef = EquipmentCatalog.GetEquipmentDef(ing.Equipment);
-                                ingName = edef ? edef.nameToken : ing.Equipment.ToString();
-                            }
-
-                            _log.LogDebug($"      - Ingredient: {ingName} x{ing.Count}");
-                        }
-                    }
-                    else
-                    {
-                        _log.LogDebug("      - No ingredients?");
-                    }
-
-                    index++;
-                }
-
-                _log.LogDebug("---- End of recipe list ----");
-            }
-
-
             OnRecipesBuilt?.Invoke(_recipes); // Notify listeners that recipes are ready
         }
 
