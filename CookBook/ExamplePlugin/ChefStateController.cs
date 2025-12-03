@@ -108,6 +108,12 @@ namespace CookBook
                 return;
             }
 
+            if (!_subscribedInventoryHandler)
+            {
+                InventoryTracker.OnInventoryChanged += OnInventoryChanged;
+                _subscribedInventoryHandler = true;
+            }
+            
             var itemstacks = InventoryTracker.GetItemStacksCopy();
             var equipmentstacks = InventoryTracker.GetEquipmentStacksCopy();
             if (itemstacks != null && equipmentstacks != null)
