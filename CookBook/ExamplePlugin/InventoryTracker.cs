@@ -31,7 +31,6 @@ namespace CookBook
 
             _initialized = true;
             _log = log;
-            _log.LogInfo("InventoryTracker.Init()");
         }
 
         //--------------------------------------- Status Control ----------------------------------------

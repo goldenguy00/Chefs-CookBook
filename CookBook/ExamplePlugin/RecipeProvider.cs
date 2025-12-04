@@ -38,7 +38,6 @@ namespace CookBook
 
             _initialized = true;
             _log = log;
-            _log.LogInfo("RecipeProvider.Init()");
 
             ContentManager.onContentPacksAssigned += OnContentPacksAssigned; // subscribe to pack events to ensure recipes are built after all other recipes are handled
         }

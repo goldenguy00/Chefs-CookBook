@@ -34,8 +34,6 @@ namespace CookBook
             // subscribe to stagechange events
             Stage.onStageStartGlobal += OnStageStart;
             Run.onRunDestroyGlobal += OnRunDestroy;
-
-            _log.LogInfo("StateController.Init()");
         }
 
         internal static void Shutdown()
@@ -161,6 +159,7 @@ namespace CookBook
             _planner = null;
             _chefDialogueOpen = false;
             _lastCraftables.Clear();
+            CraftUI.Detach();
         }
 
         // -------------------- Chef dialogue events --------------------
@@ -174,9 +173,6 @@ namespace CookBook
             _chefDialogueOpen = true;
             _activeCraftingController = controller;
             _log.LogDebug("StateController: Chef UI opened.");
-
-            
-
             CraftUI.Attach(_activeCraftingController); // show CraftUI
         }
 
@@ -190,7 +186,6 @@ namespace CookBook
             {
                 _activeCraftingController = null;
             }
-
         }
 
         //--------------------------------------- Planning Helpers ----------------------------------------

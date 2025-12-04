@@ -45,8 +45,6 @@ namespace CookBook
 
             _initialized = true;
             _log = log;
-
-            log.LogInfo("TierManager.Init()");
         }
 
         // ---------------------- Tier Events ----------------------------

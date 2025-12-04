@@ -72,10 +72,8 @@ namespace CookBook
         /// </summary>
         internal void RebuildAllPlans()
         {
-            _log.LogInfo($"StateController: RebuildAllPlans() Building Recipe Index.");
             BuildRecipeIndex();
             _log.LogInfo($"StateController: RebuildAllPlans() Finished building Recipe Index.");
-            _log.LogInfo($"StateController: RebuildAllPlans() Building Plans.");
             BuildPlans();
             _log.LogInfo($"StateController: RebuildAllPlans() Finished building Plans."); // add debug info for # of plans
         }
