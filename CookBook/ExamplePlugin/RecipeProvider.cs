@@ -27,6 +27,7 @@ namespace CookBook
         // fired when recipes are ready to prompt planner build 
         internal static event System.Action<IReadOnlyList<ChefRecipe>> OnRecipesBuilt;
 
+        //--------------------------- LifeCycle -------------------------------
         /// <summary>
         /// Called once from CookBook.Awake().
         /// </summary>
@@ -40,6 +41,11 @@ namespace CookBook
             _log.LogInfo("RecipeProvider.Init()");
 
             ContentManager.onContentPacksAssigned += OnContentPacksAssigned; // subscribe to pack events to ensure recipes are built after all other recipes are handled
+        }
+
+        internal static void Shutdown()
+        {
+            ContentManager.onContentPacksAssigned -= OnContentPacksAssigned;
         }
 
         //--------------------------- ContentPack Tracking -------------------------------
@@ -172,6 +178,13 @@ namespace CookBook
                 if (ingList.Count == 0)
                 {
                     skippedEmptyIngList++;
+                    _log.LogDebug("RecipeProvider: Ingredient Count <= 0 – skipping.");
+                    continue;
+                }
+
+                if (resultCount <= 0)
+                {
+                    _log.LogDebug($"RecipeProvider: name: {resultPickupDef.internalName} resultCount <= 0 – skipping.");
                     continue;
                 }
 

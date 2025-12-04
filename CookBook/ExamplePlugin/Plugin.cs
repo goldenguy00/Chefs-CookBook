@@ -1,8 +1,9 @@
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
-using RoR2.ContentManagement;
 using RoR2;
+using RoR2.ContentManagement;
+using static RoR2.Console;
 
 namespace CookBook
 {
@@ -60,25 +61,46 @@ namespace CookBook
                 }
             });
 
-            // runtime events
             TierOrder.SettingChanged += TierManager.OnTierOrderConfigChanged; // subscribe to sorting config change events
-            TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged; // subscribe to sort order update events
-            RecipeProvider.OnRecipesBuilt += StateController.OnRecipesBuilt; // subscribe to recipe completion event
+            MaxDepth.SettingChanged += StateController.OnMaxDepthChanged;
+
+            // subscribe to recipe completion event
+            RecipeProvider.OnRecipesBuilt += StateController.OnRecipesBuilt;
+
+            // subscribe to sort order update events
+            TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged;
 
             // Init subsystems
             // TODO: Initialize settings UI via SettingsUI.cs
             RecipeProvider.Init(Log); // Parse all chef recipe rules
             StateController.Init(Log); // Initialize chef/state logic
-            ChefDialogueHooks.Init(Log); // TODO: actually fill in lol
+            DialogueHooks.Init(Log); // Initialize all Chef Dialogue Hooks
+            InventoryTracker.Init(Log); // Begin waiting for Enable signal
+            CraftUI.Init(Log); // Initialize craft UI injection
+
+            // Subscribe to Chef dialogue events
+            DialogueHooks.ChefUiOpened += StateController.OnChefUiOpened;
+            DialogueHooks.ChefUiClosed += StateController.OnChefUiClosed;
         }
 
         private void OnDestroy()
         {
-            // Clean up event subscriptions
+            // Clean up global event subscriptions
             RecipeProvider.OnRecipesBuilt -= StateController.OnRecipesBuilt;
             TierManager.OnTierOrderChanged -= StateController.OnTierOrderChanged;
+            
+            // unsubscribe from settings changes
             TierOrder.SettingChanged -= TierManager.OnTierOrderConfigChanged;
-            ContentManager.onContentPacksAssigned -= RecipeProvider.OnContentPacksAssigned;
+            MaxDepth.SettingChanged -= StateController.OnMaxDepthChanged;
+
+            // unsubscribe from chef ui state events
+            DialogueHooks.ChefUiOpened -= StateController.OnChefUiOpened;
+            DialogueHooks.ChefUiClosed -= StateController.OnChefUiClosed;
+
+            // ask subsystems to clean up their own game hooks
+            RecipeProvider.Shutdown();
+            StateController.Shutdown();
+            DialogueHooks.Shutdown();
         }
     }
 }

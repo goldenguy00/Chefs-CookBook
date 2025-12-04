@@ -13,7 +13,7 @@ namespace CookBook
         private readonly IReadOnlyList<ChefRecipe> _recipes;
         private readonly int _itemCount;
         private readonly int _equipmentCount;
-        private readonly int _maxDepth;
+        private int _maxDepth;
         private readonly ManualLogSource _log;
         private readonly Dictionary<ResultKey, List<ChefRecipe>> _recipesByResult = new(); // Recipes grouped by result (item/equipment)
         private readonly Dictionary<ResultKey, PlanEntry> _plans = new(); // all unique chains per result, deduped by input signature
@@ -36,6 +36,18 @@ namespace CookBook
             _itemCount = ItemCatalog.itemCount;
             _equipmentCount = EquipmentCatalog.equipmentCount;
             _log = log;
+            RebuildAllPlans();
+        }
+
+        internal void SetMaxDepth(int newDepth)
+        {
+            if (newDepth < 0)
+                newDepth = 0;
+
+            if (newDepth == _maxDepth)
+                return; // no-op
+
+            _maxDepth = newDepth;
             RebuildAllPlans();
         }
 
@@ -85,13 +97,10 @@ namespace CookBook
             }
 
             var result = new List<CraftableEntry>();
-
-            foreach (var kvp in _plans)
+            var affordableChains = new List<RecipeChain>();
+            foreach (var (rk, plan) in _plans)
             {
-                var rk = kvp.Key;
-                var plan = kvp.Value;
-
-                var affordableChains = new List<RecipeChain>();
+                affordableChains.Clear();
 
                 foreach (var chain in plan.Chains)
                 {
@@ -532,11 +541,6 @@ namespace CookBook
             // fill plan.Chains
             plan.Chains.Clear();
             plan.Chains.AddRange(bestBySignature.Values);
-
-            string targetName =
-            target.Kind == RecipeResultKind.Item
-                ? (ItemCatalog.GetItemDef(target.Item)?.nameToken ?? target.Item.ToString())
-                : (EquipmentCatalog.GetEquipmentDef(target.Equipment)?.nameToken ?? target.Equipment.ToString());
         }
     }
 }

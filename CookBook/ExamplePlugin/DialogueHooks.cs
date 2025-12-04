@@ -1,17 +1,89 @@
-﻿using BepInEx.Logging;
+﻿using System;
+using BepInEx.Logging;
+using RoR2;
+using RoR2.UI;
+using UnityEngine;
+using UnityEngine.Networking;
 
-internal static class ChefDialogueHooks
+namespace CookBook
 {
-    internal static ManualLogSource _log;
-    internal static void Init(ManualLogSource log)
+    internal static class DialogueHooks
     {
-        _log = log;
-        //On.EntityStates.MealPrep.MealPrepBaseState.OnEnter += OnEnterChefUI;
-        // find whatever hook fires on exiting the ui
-    }
-    // fill in
-    private static void OnEnterChefUI()
-    {
+        private static ManualLogSource _log;
+
+        /// <summary>
+        /// Fired when the Chef crafting UI opens for the local user.
+        /// </summary>
+        internal static event Action<CraftingController> ChefUiOpened;
+
+        /// <summary>
+        /// Fired when the Chef crafting UI closes for the local user.
+        /// </summary>
+        internal static event Action<CraftingController> ChefUiClosed;
+
+        // ----------------  lifecycle ----------------
+        internal static void Init(ManualLogSource log)
+        {
+            _log = log;
+            _log.LogInfo("[CookBook] Installing CraftingController UI hooks.");
+            On.RoR2.CraftingController.Awake += CraftingController_Awake;
+        }
+
+        private static void CraftingController_Awake(
+            On.RoR2.CraftingController.orig_Awake orig,
+            RoR2.CraftingController self)
+        {
+            orig(self);
+
+            if (!NetworkClient.active)
+                return;
+
+            var prompt = self.GetComponent<NetworkUIPromptController>();
+            if (!prompt)
+            {
+                _log.LogDebug("[CookBook] CraftingController has no NetworkUIPromptController, skipping.");
+                return;
+            }
+
+            // Subscribe to UI open/close for this controller instance
+            prompt.onDisplayBegin += OnPromptDisplayBegin;
+            prompt.onDisplayEnd += OnPromptDisplayEnd;
+
+            _log.LogDebug("[CookBook] Hooked NetworkUIPromptController for CraftingController.");
+        }
         
+        internal static void Shutdown()
+        {
+            On.RoR2.CraftingController.Awake -= CraftingController_Awake;
+        }
+
+        // ------------------------ Events ------------------------
+        private static void OnPromptDisplayBegin(
+            NetworkUIPromptController prompt,
+            LocalUser localUser,
+            CameraRigController cameraRig)
+        {
+            CraftingController controller = prompt.GetComponent<CraftingController>();
+            if (controller == null)
+            {
+                _log.LogError("[CookBook] UI opened but no CraftingController found on GameObject.");
+                return;
+            }
+            ChefUiOpened?.Invoke(controller);
+        }
+
+        private static void OnPromptDisplayEnd(
+            NetworkUIPromptController prompt,
+            LocalUser localUser,
+            CameraRigController cameraRig)
+        {
+            CraftingController controller = prompt.GetComponent<CraftingController>();
+            if (controller == null)
+            {
+                _log.LogError("[CookBook] UI opened but no CraftingController found on GameObject.");
+                return;
+            }
+            ChefUiClosed?.Invoke(controller);
+        }
     }
 }

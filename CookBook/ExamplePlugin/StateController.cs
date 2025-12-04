@@ -9,34 +9,52 @@ namespace CookBook
     {
         private static ManualLogSource _log;
         private static CraftPlanner _planner;
+        private static CraftingController _activeCraftingController;
         private static List<CraftPlanner.CraftableEntry> _lastCraftables = new List<CraftPlanner.CraftableEntry>();
         private static bool _subscribedInventoryHandler = false;
         private static bool _initialized = false;
 
+        private static bool _chefDialogueOpen;
+        internal static bool IsChefDialogueOpen => _chefDialogueOpen;
+
+        // Events
+        internal static event Action<IReadOnlyList<CraftPlanner.CraftableEntry>> OnCraftablesForUIChanged;
+
+        //--------------------------- LifeCycle -------------------------------
         internal static void Init(ManualLogSource log)
         {
             if (_initialized)
                 return;
 
             _log = log;
-            InventoryTracker.Init(_log);
+            
             _initialized = true;
             _planner = null; // initialized once ready
-            
+
+            // subscribe to stagechange events
             Stage.onStageStartGlobal += OnStageStart;
             Run.onRunDestroyGlobal += OnRunDestroy;
 
             _log.LogInfo("StateController.Init()");
         }
 
-        // Events
-        internal static event Action<IReadOnlyList<CraftPlanner.CraftableEntry>> OnCraftablesForUIChanged;
+        internal static void Shutdown()
+        {
+            Stage.onStageStartGlobal -= OnStageStart;
+            Run.onRunDestroyGlobal -= OnRunDestroy;
+
+            InventoryTracker.Disable();
+            InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
+
+            _planner = null;
+            _lastCraftables.Clear();
+        }
 
         //-------------------------------- State Tracking ----------------------------------
         /// <summary>
         /// called whenever a new Stage instance starts, use for scene-based control
         /// </summary>
-        private static void OnStageStart(Stage stage)
+        internal static void OnStageStart(Stage stage)
         {
             var sceneDef = stage ? stage.sceneDef : null;
 
@@ -51,16 +69,12 @@ namespace CookBook
                 }
 
                 InventoryTracker.Enable();
-                // TODO: hook Chef NPC interaction state
-                // TODO: hook into Chef UI and enable UI handling via CraftUI.cs
             }
             else
             {
                 InventoryTracker.Disable();
                 InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
                 _subscribedInventoryHandler = false;
-
-                // TODO: disable custom UI entirely
             }
         }
 
@@ -107,6 +121,34 @@ namespace CookBook
             OnCraftablesForUIChanged?.Invoke(_lastCraftables);
         }
 
+        internal static void OnMaxDepthChanged(object _, EventArgs __)
+        {
+            if (_planner == null)
+            {
+                _log?.LogDebug("OnMaxDepthChanged: planner is null, ignoring.");
+                return;
+            }
+
+            int newDepth = CookBook.MaxDepth.Value;
+            _log?.LogInfo($"OnMaxDepthChanged: updated planner max depth to {newDepth}.");
+
+            _planner.SetMaxDepth(newDepth);
+            _planner.RebuildAllPlans();
+
+            // recompute craftables if on the Chef stage
+            if (!IsChefStage())
+                return;
+
+            var itemStacks = InventoryTracker.GetItemStacksCopy();
+            var equipmentStacks = InventoryTracker.GetEquipmentStacksCopy();
+
+            if (itemStacks != null && equipmentStacks != null &&
+                itemStacks.Length > 0 && equipmentStacks.Length > 0)
+            {
+                _planner.ComputeCraftable(itemStacks, equipmentStacks);
+            }
+        }
+        
         /// <summary>
         /// Cleanup Chef State Tracker when the run ends
         /// </summary>
@@ -117,7 +159,43 @@ namespace CookBook
             InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
             _subscribedInventoryHandler = false;
             _planner = null;
+            _chefDialogueOpen = false;
             _lastCraftables.Clear();
+        }
+
+        // -------------------- Chef dialogue events --------------------
+        internal static void OnChefUiOpened(CraftingController controller)
+        {
+            if (!IsChefStage())
+            {
+                return;
+            }
+
+            _chefDialogueOpen = true;
+            _activeCraftingController = controller;
+            _log.LogDebug("StateController: Chef UI opened.");
+
+            
+
+            CraftUI.Attach(_activeCraftingController); // show CraftUI
+        }
+
+        internal static void OnChefUiClosed(CraftingController controller)
+        {
+            if (!IsChefStage()) 
+            {
+                return;
+            }
+
+            _log.LogDebug("StateController: Chef UI closed.");
+            CraftUI.Detach(); // Hide CraftUI
+            _chefDialogueOpen = false;
+
+            if (_activeCraftingController == controller)
+            {
+                _activeCraftingController = null;
+            }
+
         }
 
         //--------------------------------------- Planning Helpers ----------------------------------------
@@ -152,7 +230,7 @@ namespace CookBook
             
             // compute initial snapshot
             var itemstacks = InventoryTracker.GetItemStacksCopy();
-            var equipmentstacks = InventoryTracker.GetEquipmentStacksCopy();
+            var equipmentstacks = InventoryTracker.GetEquipmentStacksCopy(); // number of equipment with a given equipment index i
             if (itemstacks != null && equipmentstacks != null)
             {
                 _planner.ComputeCraftable(itemstacks, equipmentstacks); // fires OnCraftablesUpdated, which then reassigns _lastCraftables
@@ -189,10 +267,5 @@ namespace CookBook
         {
             return IsChefStage(GetCurrentScene());
         }
-
-        // TODO: Chef dialogue detection
-        // - Hook the Chef NPC’s interaction component
-        // - Detect when the player opens/closes that dialogue
-        // - Show/hide cookbook UI only while that dialogue is open
     }
 }
