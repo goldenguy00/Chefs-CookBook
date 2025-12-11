@@ -381,6 +381,9 @@ namespace CookBook
             }
         }
 
+        // TODO: add checks to early exit on circular crafts, or crafts that create/consume the desired resulting item in any quantity.
+        // If I am crafting a laser scope, I should NOT in an intermediate be breaking down a laser scope.
+        // If I am crafting lens makers glasses, I shouldn't be consuming any quantity of them at any intermediate, as that is wasteful to the goal of finding the CHEAPEST chain.
         private void BuildPlans()
         {
             _plans.Clear();
