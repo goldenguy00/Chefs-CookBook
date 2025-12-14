@@ -68,19 +68,14 @@ namespace CookBook
         /// 
         private static void BuildRecipes()
         {
-            _recipes.Clear(); // initialize
-            
-            // fill in, no reflection logic anymore
+            _recipes.Clear();
+
             var recipesArray = CraftableCatalog.GetAllRecipes();
             if (recipesArray == null || recipesArray.Length == 0)
             {
                 _log.LogWarning("RecipeProvider: no recipes returned from CraftableCatalog.GetAllRecipes().");
                 return;
             }
-
-            int skippedNoPickupDef = 0;
-            int skippedNonItemEquip = 0;
-            int skippedEmptyIngList = 0;
 
             foreach (var recipeEntry in recipesArray)
             {
@@ -99,7 +94,6 @@ namespace CookBook
                 PickupDef resultPickupDef = PickupCatalog.GetPickupDef(resultPickup);
                 if (resultPickupDef == null)
                 {
-                    skippedNoPickupDef++;
                     continue;
                 }
 
@@ -119,8 +113,6 @@ namespace CookBook
                 }
                 else
                 {
-                    // Not an item/equipment pickup
-                    skippedNonItemEquip++;
                     continue;
                 }
 
@@ -130,11 +122,10 @@ namespace CookBook
                 List<PickupIndex> ingredientPickups = recipeEntry.GetAllPickups();
                 if (ingredientPickups == null || ingredientPickups.Count == 0)
                 {
-                    skippedEmptyIngList++;
                     continue;
                 }
 
-                var ingList = new List<Ingredient>();
+                var rawIngredients = new List<Ingredient>();
 
                 foreach (var ingPi in ingredientPickups)
                 {
@@ -149,52 +140,57 @@ namespace CookBook
                         continue;
                     }
 
-                    // ---------------- Result parse (item/equipment) ----------------
                     if (ingDef.itemIndex != ItemIndex.None)
                     {
-                        ingList.Add(new Ingredient(
-                            kind: IngredientKind.Item,
-                            item: ingDef.itemIndex,
-                            equipment: EquipmentIndex.None,
-                            count: 1
-                        ));
+                        rawIngredients.Add(new Ingredient(IngredientKind.Item, ingDef.itemIndex, EquipmentIndex.None, 1));
                     }
-
                     else if (ingDef.equipmentIndex != EquipmentIndex.None)
                     {
-                        ingList.Add(new Ingredient(
-                            kind: IngredientKind.Equipment,
-                            item: ItemIndex.None,
-                            equipment: ingDef.equipmentIndex,
-                            count: 1
-                        ));
+                        rawIngredients.Add(new Ingredient(IngredientKind.Equipment, ItemIndex.None, ingDef.equipmentIndex, 1));
                     }
-                    // else: non-item/equipment ingredient, ignore
                 }
 
-                if (ingList.Count == 0)
+                if (rawIngredients.Count == 0)
                 {
-                    skippedEmptyIngList++;
-                    _log.LogDebug("RecipeProvider: Ingredient Count <= 0 – skipping.");
                     continue;
                 }
 
-                if (resultCount <= 0)
+                if (rawIngredients.Count <= 2)
                 {
-                    _log.LogDebug($"RecipeProvider: name: {resultPickupDef.internalName} resultCount <= 0 – skipping.");
-                    continue;
+                    var recipe = new ChefRecipe(resultKind, resultItemidx, resultEquipmentidx, resultCount, rawIngredients.ToArray());
+                    _recipes.Add(recipe);
+                    PrintRecipeDebug(recipe, resultPickupDef.internalName);
                 }
+                else
+                {
+                    var baseIng = rawIngredients[0];
+                    for (int i = 1; i < rawIngredients.Count; i++)
+                    {
+                        var variantIng = rawIngredients[i];
 
-                _recipes.Add(new ChefRecipe(
-                    resultKind: resultKind,
-                    resultItem: resultItemidx,
-                    resultEquipment: resultEquipmentidx,
-                    resultCount: resultCount,
-                    ingredients: ingList.ToArray()
-                ));
+                        var pair = new Ingredient[] { baseIng, variantIng };
+
+                        var recipe = new ChefRecipe(resultKind, resultItemidx, resultEquipmentidx, resultCount, pair);
+                        _recipes.Add(recipe);
+                        PrintRecipeDebug(recipe, resultPickupDef.internalName);
+                    }
+                }
             }
             _recipesBuilt = true;
+            _log.LogInfo($"RecipeProvider: Built {_recipes.Count} explicit recipes from game data.");
             OnRecipesBuilt?.Invoke(_recipes); // Notify listeners that recipes are ready
+        }
+        private static void PrintRecipeDebug(ChefRecipe r, string resultName)
+        {
+            string logMsg = $"[RECIPE] Result: {resultName} (x{r.ResultCount}) | Ingredients: ";
+            foreach (var ing in r.Ingredients)
+            {
+                string name = (ing.Kind == IngredientKind.Item)
+                    ? ItemCatalog.GetItemDef(ing.Item)?.name ?? "null"
+                    : EquipmentCatalog.GetEquipmentDef(ing.Equipment)?.name ?? "null";
+                logMsg += $"{name} (x{ing.Count}), ";
+            }
+            _log.LogInfo(logMsg);
         }
     }
 

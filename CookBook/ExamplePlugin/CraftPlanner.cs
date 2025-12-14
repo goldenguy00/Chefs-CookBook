@@ -2,6 +2,9 @@
 using RoR2;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using static CookBook.CraftPlanner;
 
 namespace CookBook
 {
@@ -15,15 +18,19 @@ namespace CookBook
         private readonly int _equipmentCount;
         private int _maxDepth;
         private readonly ManualLogSource _log;
+
+        // Lookup tables
         private readonly Dictionary<ResultKey, List<ChefRecipe>> _recipesByResult = new(); // Recipes grouped by result (item/equipment)
-        private readonly Dictionary<ResultKey, PlanEntry> _plans = new(); // all unique chains per result, deduped by input signature
+        private readonly Dictionary<ResultKey, PlanEntry> _plans = new();
 
         /// <summary>
-        /// Offline computed plans; keyed by desired result
+        /// Offline computed plans; keyed by desired result.
         /// </summary>
         internal IReadOnlyDictionary<ResultKey, PlanEntry> Plans => _plans;
 
-        // events
+        /// <summary>
+        /// Thrown when the list of craftable chains has been updated, caught by CraftUI.
+        /// </summary>
         internal event Action<List<CraftableEntry>> OnCraftablesUpdated;
 
         /// <summary>
@@ -36,36 +43,24 @@ namespace CookBook
             _itemCount = ItemCatalog.itemCount;
             _equipmentCount = EquipmentCatalog.equipmentCount;
             _log = log;
+
             RebuildAllPlans();
         }
 
         internal void SetMaxDepth(int newDepth)
         {
             if (newDepth < 0)
+            {
                 newDepth = 0;
+            }
 
             if (newDepth == _maxDepth)
-                return; // no-op
+            {
+                return;
+            }
 
             _maxDepth = newDepth;
             RebuildAllPlans();
-        }
-
-        // ------------------------ Public query API ---------------------------
-        /// <summary>
-        /// Describes one craftable result (item or equipment) and the chains that
-        /// are currently affordable from a given inventory snapshot.
-        /// Chains are sorted by increasing depth, where MinDepth is simply Chains[0].Depth when Chains.Count &gt; 0
-        /// </summary>
-        internal sealed class CraftableEntry
-        {
-            public RecipeResultKind ResultKind;
-            public ItemIndex ResultItem;
-            public EquipmentIndex ResultEquipment;
-            public int ResultCount;
-
-            public int MinDepth;
-            public List<RecipeChain> Chains = new();
         }
 
         /// <summary>
@@ -74,28 +69,318 @@ namespace CookBook
         internal void RebuildAllPlans()
         {
             BuildRecipeIndex();
-            _log.LogInfo($"StateController: RebuildAllPlans() Finished building Recipe Index.");
             BuildPlans();
-            _log.LogInfo($"StateController: RebuildAllPlans() Finished building Plans."); // add debug info for # of plans
+            _log.LogInfo($"CraftPlanner: Built plans for {_plans.Count} results.");
         }
 
+        // ------------------------ LUT Build Logic ---------------------------
+        private void BuildRecipeIndex()
+        {
+            _recipesByResult.Clear();
+
+            foreach (var r in _recipes)
+            {
+                var key = new ResultKey(r.ResultKind, r.ResultItem, r.ResultEquipment);
+
+                if (!_recipesByResult.TryGetValue(key, out var list))
+                {
+                    list = new List<ChefRecipe>();
+                    _recipesByResult[key] = list;
+                }
+
+                list.Add(r);
+            }
+        }
+
+        // TODO: add checks to early exit on circular crafts, or crafts that create/consume the desired resulting item in any quantity.
+        private void BuildPlans()
+        {
+            _plans.Clear();
+            var stack = new HashSet<ResultKey>();
+
+            foreach (var kvp in _recipesByResult)
+            {
+                var target = kvp.Key;
+                var plan = new PlanEntry(target);
+
+                EnumerateChainsForTarget(target, plan, stack);
+
+                if (plan.Chains.Count > 0)
+                {
+                    _plans[target] = plan;
+
+                    // --- DEBUG DUMP START ---
+                    string targetName = (target.Kind == RecipeResultKind.Item)
+                        ? ItemCatalog.GetItemDef(target.Item)?.name ?? "???"
+                        : EquipmentCatalog.GetEquipmentDef(target.Equipment)?.name ?? "???";
+
+                    if (targetName == "CritDamage")
+                    {
+                        foreach (var chain in plan.Chains)
+                        {
+                            var sb = new StringBuilder();
+                            sb.AppendLine($"[CHAIN] {targetName} (Depth {chain.Depth}):");
+
+                            int stepNum = 1;
+                            foreach (var step in chain.Steps)
+                            {
+                                // 1. Identify Result
+                                string stepResult = (step.ResultKind == RecipeResultKind.Item)
+                                    ? ItemCatalog.GetItemDef(step.ResultItem)?.name ?? "null"
+                                    : EquipmentCatalog.GetEquipmentDef(step.ResultEquipment)?.name ?? "null";
+
+                                // 2. Identify Ingredients
+                                var ingNames = new List<string>();
+                                foreach (var ing in step.Ingredients)
+                                {
+                                    string iName = (ing.Kind == IngredientKind.Item)
+                                        ? ItemCatalog.GetItemDef(ing.Item)?.name
+                                        : EquipmentCatalog.GetEquipmentDef(ing.Equipment)?.name;
+                                    ingNames.Add($"{iName} (x{ing.Count})");
+                                }
+
+                                sb.AppendLine($"   Step {stepNum}: {string.Join(" + ", ingNames)} -> {stepResult} (x{step.ResultCount})");
+                                stepNum++;
+                            }
+
+                            // 3. Print Calculated Cost
+                            sb.Append($"   >>> CALCULATED COST: ");
+                            bool first = true;
+                            for (int i = 0; i < chain.TotalItemCost.Length; i++)
+                            {
+                                if (chain.TotalItemCost[i] > 0)
+                                {
+                                    if (!first) sb.Append(", ");
+                                    sb.Append($"{ItemCatalog.GetItemDef((ItemIndex)i)?.name} (x{chain.TotalItemCost[i]})");
+                                    first = false;
+                                }
+                            }
+
+                            _log.LogInfo(sb.ToString());
+                        }
+                    }
+                    // --- DEBUG DUMP END ---
+                }
+            }
+        }
+
+        private void EnumerateChainsForTarget(ResultKey target, PlanEntry plan, HashSet<ResultKey> stack)
+        {
+            stack.Clear();
+            var currentChain = new List<ChefRecipe>();
+            var validChains = new List<RecipeChain>();
+
+            DFS(target, target, 0, currentChain, stack, validChains);
+
+            plan.Chains.Clear();
+            plan.Chains.AddRange(validChains);
+        }
+
+        private void DFS(
+           ResultKey current,
+           ResultKey rootTarget,
+           int depth,
+           List<ChefRecipe> chain,
+           HashSet<ResultKey> stack,
+           List<RecipeChain> validChains)
+        {
+            if (depth >= _maxDepth)
+            {
+                return;
+            }
+
+            if (!_recipesByResult.TryGetValue(current, out var options))
+            {
+                return;
+            }
+
+
+            // Cycle Protection: allows "profit loops" but prevents infinite recursion
+            bool isRecursiveLoop = stack.Contains(current);
+            if (!isRecursiveLoop)
+            {
+                stack.Add(current);
+            }
+
+            foreach (var recipe in options)
+            {
+                if (IsCycle1Recipe(recipe))
+                {
+                    continue;
+                }
+
+                chain.Add(recipe);
+
+                TryFinalizeChain(chain, validChains, rootTarget);
+
+                if (!isRecursiveLoop)
+                {
+                    foreach (var ingredient in recipe.Ingredients)
+                    {
+                        ResultKey subKey = (ingredient.Kind == IngredientKind.Item)
+                            ? new ResultKey(RecipeResultKind.Item, ingredient.Item, EquipmentIndex.None)
+                            : new ResultKey(RecipeResultKind.Equipment, ItemIndex.None, ingredient.Equipment);
+
+                        DFS(subKey, rootTarget, depth + 1, chain, stack, validChains);
+                    }
+                }
+                chain.RemoveAt(chain.Count - 1);
+            }
+            if (!isRecursiveLoop) stack.Remove(current);
+        }
+
+        /// <summary>
+        /// Given the current chain, compute its external input signature and,
+        /// if it's new for this result, store it as a RecipeChain.
+        /// </summary>
+        private void TryFinalizeChain(
+            List<ChefRecipe> chain,
+            List<RecipeChain> validChains,
+            ResultKey targetKey)
+        {
+            if (chain.Count == 0)
+            {
+                return;
+            }
+
+            var externalItems = new int[_itemCount];
+            var externalEquip = new int[_equipmentCount];
+            bool hasCost = false;
+
+            var currentItems = new int[_itemCount];
+            var currentEquip = new int[_equipmentCount];
+
+            for (int s = chain.Count - 1; s >= 0; s--)
+            {
+                var step = chain[s];
+
+                foreach (var ing in step.Ingredients)
+                {
+                    if (ing.Kind == IngredientKind.Item)
+                    {
+                        int idx = (int)ing.Item;
+                        if (idx >= 0 && idx < _itemCount)
+                        {
+                            int needed = ing.Count;
+                            if (currentItems[idx] < needed)
+                            {
+                                int missing = needed - currentItems[idx];
+                                externalItems[idx] += missing;
+                                currentItems[idx] += missing;
+                                hasCost = true;
+                            }
+                            currentItems[idx] -= needed;
+                        }
+                    }
+                    else
+                    {
+                        int idx = (int)ing.Equipment;
+                        if (idx >= 0 && idx < _equipmentCount)
+                        {
+                            int needed = ing.Count;
+                            if (currentEquip[idx] < needed)
+                            {
+                                int missing = needed - currentEquip[idx];
+                                externalEquip[idx] += missing;
+                                currentEquip[idx] += missing;
+                                hasCost = true;
+                            }
+                            currentEquip[idx] -= needed;
+                        }
+                    }
+                }
+
+                if (step.ResultKind == RecipeResultKind.Item)
+                {
+                    int idx = (int)step.ResultItem;
+                    if (idx >= 0 && idx < _itemCount)
+                        currentItems[idx] += step.ResultCount;
+                }
+                else
+                {
+                    int idx = (int)step.ResultEquipment;
+                    if (idx >= 0 && idx < _equipmentCount)
+                        currentEquip[idx] += step.ResultCount;
+                }
+            }
+
+            // ---------- Yield Calculation -----------
+            int finalBalance = (targetKey.Kind == RecipeResultKind.Item)
+                ? currentItems[(int)targetKey.Item]
+                : currentEquip[(int)targetKey.Equipment];
+
+            int startupCost = (targetKey.Kind == RecipeResultKind.Item)
+                ? externalItems[(int)targetKey.Item]
+                : externalEquip[(int)targetKey.Equipment];
+
+            if (targetKey.Item != ItemIndex.None && ItemCatalog.GetItemDef(targetKey.Item)?.name == "CritDamage")
+            {
+                if (startupCost > 0)
+                {
+                    _log.LogInfo($"[YIELD CHECK] Chain Depth {chain.Count}");
+                    _log.LogInfo($"   Target: {ItemCatalog.GetItemDef(targetKey.Item).name}");
+                    _log.LogInfo($"   Produced: {finalBalance} | Cost: {startupCost}");
+                    _log.LogInfo($"   Result: {finalBalance - startupCost}");
+                }
+            }
+
+            if ((finalBalance - startupCost) <= 0)
+            {
+                return;
+            }
+
+            if (!hasCost)
+            {
+                _log.LogInfo($"Skipping entry for target {targetKey.Kind}");
+                return;
+            }
+
+            bool isDuplicate = false;
+
+            var comparisonBuffer = new List<ChefRecipe>(chain.Count);
+            foreach (var valid in validChains)
+            {
+                if (valid.Steps.Count != chain.Count)
+                {
+                    continue; // if length doesnt match, early exit iteration for optimization, as this must not be a permutation
+                }
+
+                comparisonBuffer.Clear();
+                comparisonBuffer.AddRange(valid.Steps);
+
+                bool match = true;
+                foreach (var recipe in chain)
+                {
+                    if (!comparisonBuffer.Remove(recipe))
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match)
+                {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+
+            if (!isDuplicate)
+            {
+                validChains.Add(new RecipeChain(chain, externalItems, externalEquip));
+            }
+        }
+
+        // ------------------------ Runtime query API ---------------------------
         /// <summary>
         /// Given a snapshot of item stacks (indexed by ItemCatalog.itemCount),
         /// compute all craftable results, up to the preconfigured _maxDepth.
         /// </summary>
         public List<CraftableEntry> ComputeCraftable(int[] itemStacks, int[] equipmentStacks)
         {
-            if (itemStacks == null)
-            {
-                throw new ArgumentNullException(nameof(itemStacks));
-            }
-            if (equipmentStacks == null) 
-            {
-                throw new ArgumentNullException(nameof(equipmentStacks));
-            }
-
             var result = new List<CraftableEntry>();
             var affordableChains = new List<RecipeChain>();
+
             foreach (var (rk, plan) in _plans)
             {
                 affordableChains.Clear();
@@ -121,35 +406,23 @@ namespace CookBook
                     return a.Depth.CompareTo(b.Depth);
                 });
 
-                int currentCount = 0;
-                bool hasGroup = false;
-                List<RecipeChain> currentGroup = new List<RecipeChain>();
+                int currentCount = -1;
+                var currentGroup = new List<RecipeChain>();
 
                 foreach (var chain in affordableChains)
                 {
-                    if (!hasGroup)
+                    if (chain.ResultCount != currentCount)
                     {
+                        if (currentGroup.Count > 0)
+                        {
+                            EmitCraftableGroup(result, rk, currentCount, currentGroup);
+                        }
                         currentCount = chain.ResultCount;
-                        currentGroup.Add(chain);
-                        hasGroup = true;
-                        continue;
-                    }
-                    if (chain.ResultCount == currentCount)
-                    {
-                        currentGroup.Add(chain);
-                    }
-                    else
-                    {
-                        // resultCount changed: flush previous group
-                        EmitCraftableGroup(result, rk, currentCount, currentGroup);
-
-                        // start new group
                         currentGroup.Clear();
-                        currentCount = chain.ResultCount;
-                        currentGroup.Add(chain);
                     }
+                    currentGroup.Add(chain);
                 }
-                if (hasGroup)
+                if (currentGroup.Count > 0)
                 {
                     EmitCraftableGroup(result, rk, currentCount, currentGroup);
                 }
@@ -164,28 +437,7 @@ namespace CookBook
             return result;
         }
 
-        // ------------------------ Query Helpers ---------------------------
-        private static void EmitCraftableGroup(
-    List<CraftableEntry> result,
-    ResultKey rk,
-    int resultCount,
-    List<RecipeChain> group)
-        {
-            if (group == null || group.Count == 0)
-                return;
 
-            var entry = new CraftableEntry
-            {
-                ResultKind = rk.Kind,
-                ResultItem = rk.Item,
-                ResultEquipment = rk.Equipment,
-                ResultCount = resultCount,
-                MinDepth = group[0].Depth,
-                Chains = new List<RecipeChain>(group)
-            };
-
-            result.Add(entry);
-        }
 
         /// <summary>
         /// Checks whether the given inventory satisfies the required external item costs for the specified chain.
@@ -195,25 +447,100 @@ namespace CookBook
             var itemCost = chain.TotalItemCost;
             for (int i = 0; i < itemCost.Length; i++)
             {
-                int need = itemCost[i];
-                if (need > 0 && itemStacks[i] < need)
+                if (itemCost[i] > 0 && itemStacks[i] < itemCost[i])
+                {
                     return false;
+                }
             }
+            var equipCost = chain.TotalEquipmentCost;
 
-            foreach (var kvp in chain.TotalEquipmentCost)
+            for (int i = 0; i < equipCost.Length; i++)
             {
-                var idx = kvp.Key;
-                int need = kvp.Value;
-
-                int have = equipmentStacks[(int)idx];
-                if (have < need)
-                    return false;
+                if (i < equipmentStacks.Length)
+                {
+                    if (equipCost[i] > 0 && equipmentStacks[i] < equipCost[i]) return false;
+                }
             }
 
             return true;
         }
 
-        // ------------------------ Internal plan types ---------------------------
+        private static void EmitCraftableGroup(List<CraftableEntry> result, ResultKey rk, int count, List<RecipeChain> group)
+        {
+            result.Add(new CraftableEntry
+            {
+                ResultKind = rk.Kind,
+                ResultItem = rk.Item,
+                ResultEquipment = rk.Equipment,
+                ResultCount = count,
+                MinDepth = group[0].Depth,
+                Chains = new List<RecipeChain>(group)
+            });
+        }
+
+        private bool IsCycle1Recipe(ChefRecipe recipe)
+        {
+            foreach (var ing in recipe.Ingredients)
+            {
+                // Check for Item Self-Consumption
+                if (ing.Kind == IngredientKind.Item && recipe.ResultKind == RecipeResultKind.Item)
+                {
+                    if (ing.Item == recipe.ResultItem) return true;
+                }
+                // Check for Equipment Self-Consumption
+                else if (ing.Kind == IngredientKind.Equipment && recipe.ResultKind == RecipeResultKind.Equipment)
+                {
+                    if (ing.Equipment == recipe.ResultEquipment) return true;
+                }
+            }
+            return false;
+        }
+
+        // ------------------------ Types ---------------------------
+        /// <summary>
+        /// Describes one craftable result (item or equipment) and the chains that are currently affordable from a given inventory snapshot.
+        /// Chains are sorted by increasing depth, where MinDepth is simply Chains[0].Depth
+        /// </summary>
+        internal sealed class CraftableEntry
+        {
+            public RecipeResultKind ResultKind;
+            public ItemIndex ResultItem;
+            public EquipmentIndex ResultEquipment;
+            public int ResultCount;
+            public int MinDepth;
+            public List<RecipeChain> Chains = new();
+        }
+
+        /// <summary>
+        /// A single recipe chain: ordered list of recipes plus cached external costs.
+        /// </summary>
+        internal sealed class RecipeChain
+        {
+            public IReadOnlyList<ChefRecipe> Steps { get; }
+            public int Depth => Steps.Count;
+            public int[] TotalItemCost { get; }
+            public int[] TotalEquipmentCost { get; }
+            public int ResultCount { get; }
+
+            public RecipeChain(List<ChefRecipe> steps, int[] items, int[] equip)
+            {
+                Steps = steps.ToArray();
+                TotalItemCost = items;
+                TotalEquipmentCost = equip;
+                ResultCount = (steps.Count > 0) ? Math.Max(1, steps[0].ResultCount) : 1;
+            }
+        }
+
+        /// <summary>
+        /// All chains for a given result.
+        /// </summary>
+        internal sealed class PlanEntry
+        {
+            public ResultKey Result { get; }
+            public List<RecipeChain> Chains { get; } = new();
+            public PlanEntry(ResultKey result) { Result = result; }
+        }
+
         /// <summary>
         /// Value type key representing "what result does this recipe produce"
         /// </summary>
@@ -229,375 +556,9 @@ namespace CookBook
                 Item = item;
                 Equipment = equipment;
             }
-            public bool Equals(ResultKey other)
-            {
-                return Kind == other.Kind &&
-                       Item == other.Item &&
-                       Equipment == other.Equipment;
-            }
-
-            public override bool Equals(object obj)
-            {
-                return obj is ResultKey other && Equals(other);
-            }
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = (int)Kind;
-                    hash = (hash * 397) ^ (int)Item;
-                    hash = (hash * 397) ^ (int)Equipment;
-                    return hash;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Canonical signature for an input combination. 
-        /// Used to dedupe chains that require the same base inputs.
-        /// </summary>
-        private readonly struct InputSignature : IEquatable<InputSignature>
-        {
-            public readonly (ItemIndex index, int count)[] Items;
-            public readonly (EquipmentIndex index, int count)[] Equipment;
-
-            public InputSignature(
-                List<(ItemIndex index, int count)> items,
-                List<(EquipmentIndex index, int count)> equipment)
-            {
-                Items = items?.ToArray() ?? Array.Empty<(ItemIndex, int)>();
-                Equipment = equipment?.ToArray() ?? Array.Empty<(EquipmentIndex, int)>();
-            }
-
-            public bool Equals(InputSignature other)
-            {
-                if (Items.Length != other.Items.Length ||
-                    Equipment.Length != other.Equipment.Length)
-                    return false;
-
-                for (int i = 0; i < Items.Length; i++)
-                {
-                    if (Items[i].index != other.Items[i].index ||
-                        Items[i].count != other.Items[i].count)
-                        return false;
-                }
-
-                for (int i = 0; i < Equipment.Length; i++)
-                {
-                    if (Equipment[i].index != other.Equipment[i].index ||
-                        Equipment[i].count != other.Equipment[i].count)
-                        return false;
-                }
-
-                return true;
-            }
-            public override bool Equals(object obj)
-            {
-                return obj is InputSignature other && Equals(other);
-            }
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = 17;
-
-                    for (int i = 0; i < Items.Length; i++)
-                    {
-                        hash = hash * 31 + (int)Items[i].index;
-                        hash = hash * 31 + Items[i].count;
-                    }
-
-                    for (int i = 0; i < Equipment.Length; i++)
-                    {
-                        hash = hash * 31 + (int)Equipment[i].index;
-                        hash = hash * 31 + Equipment[i].count;
-                    }
-
-                    return hash;
-                }
-            }
-        }
-
-        /// <summary>
-        /// A single recipe chain: ordered list of recipes plus cached external costs.
-        /// </summary>
-        internal sealed class RecipeChain
-        {
-            public IReadOnlyList<ChefRecipe> Steps { get; }
-            public int Depth => Steps.Count;
-
-            // Indexed by ItemCatalog.itemCount
-            public int[] TotalItemCost { get; }
-            public Dictionary<EquipmentIndex, int> TotalEquipmentCost { get; }
-            public int ResultCount { get; }
-
-            public RecipeChain(
-                List<ChefRecipe> steps,
-                int[] totalItemCost,
-                Dictionary<EquipmentIndex, int> totalEquipmentCost)
-            {
-                Steps = steps.ToArray();
-                TotalItemCost = totalItemCost;
-                TotalEquipmentCost = totalEquipmentCost;
-
-                if (steps != null && steps.Count > 0)
-                    ResultCount = Math.Max(1, steps[steps.Count - 1].ResultCount);
-                else
-                    ResultCount = 1;
-            }
-        }
-
-        /// <summary>
-        /// All chains for a given result.
-        /// </summary>
-        internal sealed class PlanEntry
-        {
-            public ResultKey Result { get; }
-            public List<RecipeChain> Chains { get; } = new();
-
-            public PlanEntry(ResultKey result)
-            {
-                Result = result;
-            }
-        }
-
-        // ------------------------ Offline plan building ---------------------------
-        private void BuildRecipeIndex()
-        {
-            _recipesByResult.Clear();
-
-            foreach (var r in _recipes)
-            {
-                var key = new ResultKey(r.ResultKind, r.ResultItem, r.ResultEquipment);
-
-                if (!_recipesByResult.TryGetValue(key, out var list))
-                {
-                    list = new List<ChefRecipe>();
-                    _recipesByResult[key] = list;
-                }
-
-                list.Add(r);
-            }
-        }
-
-        // TODO: add checks to early exit on circular crafts, or crafts that create/consume the desired resulting item in any quantity.
-        // If I am crafting a laser scope, I should NOT in an intermediate be breaking down a laser scope.
-        // If I am crafting lens makers glasses, I shouldn't be consuming any quantity of them at any intermediate, as that is wasteful to the goal of finding the CHEAPEST chain.
-        private void BuildPlans()
-        {
-            _plans.Clear();
-
-            foreach (var kvp in _recipesByResult)
-            {
-                var target = kvp.Key;
-                var plan = new PlanEntry(target);
-
-                EnumerateChainsForTarget(target, plan);
-
-                if (plan.Chains.Count > 0)
-                {
-                    _plans[target] = plan;
-                }
-            }
-        }
-
-        // ------------------------ Offline Build ---------------------------
-        /// <summary>
-        /// Given the current chain, compute its external input signature and,
-        /// if it's new for this result, store it as a RecipeChain.
-        /// </summary>
-        private void TryFinalizeChain(
-            List<ChefRecipe> chain,
-            PlanEntry plan,
-            Dictionary<InputSignature, RecipeChain> bestBySignature)
-        {
-            if (chain.Count == 0)
-            {
-                return;
-            }
-
-            // Aggregate full chain resources
-            var externalItems = new List<(ItemIndex, int)>();
-            var externalEquip = new List<(EquipmentIndex, int)>();
-            var neededItems = new int[_itemCount];
-            var producedItems = new int[_itemCount];
-            var neededEquip = new Dictionary<EquipmentIndex, int>();
-            var producedEquip = new Dictionary<EquipmentIndex, int>();
-
-            // step through chain
-            foreach (var step in chain)
-            {
-                // ingredients
-                foreach (var ingredient in step.Ingredients)
-                {
-                    if (ingredient.Kind == IngredientKind.Item)
-                    {
-                        int idx = (int)ingredient.Item;
-                        if (idx < 0 || idx >= _itemCount) continue;
-                        neededItems[idx] += ingredient.Count;
-                    }
-                    else
-                    {
-                        if (!neededEquip.TryGetValue(ingredient.Equipment, out var c)) c = 0;
-                        neededEquip[ingredient.Equipment] = c + ingredient.Count;
-                    }
-                }
-
-                // results
-                if (step.ResultKind == RecipeResultKind.Item)
-                {
-                    int idx = (int)step.ResultItem;
-                    if (idx >= 0 && idx < _itemCount)
-                    {
-                        producedItems[idx] += step.ResultCount;
-                    }
-                }
-                else
-                {
-                    if (!producedEquip.TryGetValue(step.ResultEquipment, out var c)) c = 0;
-                    producedEquip[step.ResultEquipment] = c + step.ResultCount;
-                }
-            }
-
-            // Compute external item requirements (needed - produced)
-            for (int i = 0; i < _itemCount; i++)
-            {
-                int need = neededItems[i];
-                if (need <= 0) continue;
-
-                int made = producedItems[i];
-                int ext = need - made;
-
-                if (ext > 0)
-                {
-                    externalItems.Add(((ItemIndex)i, ext));
-                }
-            }
-
-            // Compute external equipment requirements (needed - produced)
-            foreach (var kvp in neededEquip)
-            {
-                var idx = kvp.Key;
-                int need = kvp.Value;
-                producedEquip.TryGetValue(idx, out var made);
-                int ext = need - made;
-                if (ext > 0)
-                {
-                    externalEquip.Add((idx, ext));
-                }
-            }
-
-            // If this chain requires no external resources, it's not useful for the player
-            if (externalItems.Count == 0 && externalEquip.Count == 0)
-            {
-                return;
-            }
-
-            // Sort by canonical signature (dedupe)
-            externalItems.Sort((a, b) => a.Item1.CompareTo(b.Item1));
-            externalEquip.Sort((a, b) => a.Item1.CompareTo(b.Item1));
-
-            var sig = new InputSignature(externalItems, externalEquip);
-
-            // Dense item cost array for cheap lookups
-            var totalItemCost = new int[_itemCount];
-            foreach (var (idx, count) in externalItems)
-            {
-                int i = (int)idx;
-                if (i >= 0 && i < _itemCount)
-                {
-                    totalItemCost[i] = count;
-                }
-            }
-
-            var eqCost = new Dictionary<EquipmentIndex, int>();
-            foreach (var (idx, count) in externalEquip)
-            {
-                eqCost[idx] = count;
-            }
-
-            var newChain = new RecipeChain(chain, totalItemCost, eqCost);
-
-            // keep only the shallowest chain per signature
-            if (bestBySignature.TryGetValue(sig, out var existing))
-            {
-                if (newChain.Depth < existing.Depth)
-                {
-                    bestBySignature[sig] = newChain;
-                }
-            }
-            else
-            {
-                bestBySignature[sig] = newChain;
-            }
-        }
-
-        private void DFS(
-            ResultKey current,
-            int depth,
-            List<ChefRecipe> chain,
-            HashSet<ResultKey> stack,
-            PlanEntry plan,
-            Dictionary<InputSignature, RecipeChain> bestBySignature)
-        {
-            if (depth >= _maxDepth)
-            {
-                return;
-            }
-
-            if (!_recipesByResult.TryGetValue(current, out var options))
-            {
-                return;
-            }
-
-            foreach (var recipe in options)
-            {
-                chain.Add(recipe);
-
-                TryFinalizeChain(chain, plan, bestBySignature);
-
-                // explore crafting ingredients for multi-step chains 
-                foreach (var ingredient in recipe.Ingredients)
-                {
-                    ResultKey subKey;
-
-                    if (ingredient.Kind == IngredientKind.Item)
-                    {
-                        subKey = new ResultKey(RecipeResultKind.Item, ingredient.Item, EquipmentIndex.None);
-                    }
-                    else // Equipment ingredient
-                    {
-                        subKey = new ResultKey(RecipeResultKind.Equipment, ItemIndex.None, ingredient.Equipment);
-                    }
-
-                    if (!_recipesByResult.ContainsKey(subKey))
-                    {
-                        continue; // this ingredient is base-only in this chain
-                    }
-
-                    if (!stack.Add(subKey))
-                        continue; // cycle protection
-
-                    DFS(subKey, depth + 1, chain, stack, plan, bestBySignature);
-                    stack.Remove(subKey);
-                }
-                chain.RemoveAt(chain.Count - 1);
-            }
-        }
-
-        private void EnumerateChainsForTarget(ResultKey target, PlanEntry plan)
-        {
-            var currentChain = new List<ChefRecipe>();
-            var stack = new HashSet<ResultKey> { target };
-            // sig -> shortest chain
-            var bestBySignature = new Dictionary<InputSignature, RecipeChain>();
-
-            DFS(target, depth: 0, currentChain, stack, plan, bestBySignature);
-
-            // fill plan.Chains
-            plan.Chains.Clear();
-            plan.Chains.AddRange(bestBySignature.Values);
+            public bool Equals(ResultKey other) => Kind == other.Kind && Item == other.Item && Equipment == other.Equipment;
+            public override bool Equals(object obj) => obj is ResultKey other && Equals(other);
+            public override int GetHashCode() => (int)Kind ^ (int)Item ^ (int)Equipment;
         }
     }
 }
