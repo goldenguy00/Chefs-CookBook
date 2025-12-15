@@ -250,7 +250,6 @@ namespace CookBook
             if (!IsAutoCrafting)
             {
                 CraftUI.Attach(_activeCraftingController);
-                CacheMealPrepTimings();
             }
         }
 
@@ -262,27 +261,48 @@ namespace CookBook
 
         //-------------------------------- Crafting Logic ----------------------------------
 
-        private static void CacheMealPrepTimings()
+        // Add this inside StateController class
+        private static IEnumerator WaitForPendingPickup(PickupIndex pickupIndex, int expectedGain, float timeout = 5.0f)
         {
-            if (_reflectionAttemptedAndFound) return;
-
-            try
+            if (pickupIndex == PickupIndex.none)
             {
-                var flags = BindingFlags.Public | BindingFlags.Static;
-
-                float d1 = (float)typeof(EntityStates.MealPrep.WaitToBeginCooking).GetField("duration", flags).GetValue(null);
-                float d2 = (float)typeof(EntityStates.MealPrep.Cooking).GetField("duration", flags).GetValue(null);
-                float d3 = (float)typeof(EntityStates.MealPrep.CookingToIdle).GetField("duration", flags).GetValue(null);
-
-                _mealPrepTotalDuration = d1 + d2 + d3;
-
-                _reflectionAttemptedAndFound = true;
-                _log.LogInfo($"[CookBook] MealPrep timings cached: {d1:F2} + {d2:F2} + {d3:F2} = {_mealPrepTotalDuration:F2}s total wait.");
+                yield break;
             }
-            catch (Exception e)
+
+            var body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
+
+            if (!body || !body.inventory)
             {
-                _log.LogWarning($"[CookBook] Failed to reflect MealPrep durations. Using default 4.0s. Error: {e.Message}");
+                yield break;
             }
+
+            var def = PickupCatalog.GetPickupDef(pickupIndex);
+            if (def == null)
+            {
+                yield break;
+            }
+
+            var name = def.internalName;
+            _log.LogDebug($"[Chain] Waiting for result: {name} (Index: {pickupIndex.value}, quantity {expectedGain})...");
+
+            int targetCount = GetOwnedCount(def, body) + expectedGain;
+
+            float timer = 0f;
+
+            while (timer < timeout)
+            {
+                int currentCount = GetOwnedCount(def, body);
+                if (currentCount >= targetCount)
+                {
+                    _log.LogInfo($"[Chain] Confirmed pickup of {name} (Reached {currentCount}/{targetCount}). Proceeding.");
+                    yield break;
+                }
+
+                timer += Time.fixedDeltaTime;
+                yield return new WaitForFixedUpdate();
+            }
+
+            _log.LogWarning($"[Chain] Timed out waiting for {name}. Did the user not collect all items?");
         }
 
         internal static void RequestCraft(RecipeChain chain)
@@ -307,13 +327,14 @@ namespace CookBook
             _craftingRoutine = _runner.StartCoroutine(CraftChainRoutine(chain));
         }
 
-        // TODO: harden chain logic so that rather than instantly complaining about a missing item it ensures that the item from the previous craft in the chain was picked up. Check for droplet binaries/pickup binaries
         private static IEnumerator CraftChainRoutine(RecipeChain chain)
         {
             Queue<ChefRecipe> craftQueue = new Queue<ChefRecipe>(chain.Steps.Reverse());
-            _log.LogInfo($"[StateController] Headless craft started. {craftQueue.Count} steps remaining.");
+            _log.LogInfo($"[StateController] Headless craft started. {chain.Steps.Count} steps remaining.");
 
             var interactor = LocalUserManager.GetFirstLocalUser()?.cachedBody?.GetComponent<Interactor>();
+            PickupIndex lastCraftedPickup = PickupIndex.none;
+            int lastCraftedQuantity = 0;
 
             while (craftQueue.Count > 0)
             {
@@ -324,6 +345,11 @@ namespace CookBook
                 }
 
                 if (!interactor) yield break;
+
+                if (lastCraftedPickup != PickupIndex.none)
+                {
+                    yield return WaitForPendingPickup(lastCraftedPickup, lastCraftedQuantity, 5.0f);
+                }
 
                 float uiTimeout = 2.0f;
                 while (_activeCraftingController == null && uiTimeout > 0)
@@ -349,7 +375,7 @@ namespace CookBook
 
                 if (!SubmitIngredients(_activeCraftingController, step))
                 {
-                    _log.LogWarning($"Missing ingredients for step {step.ResultItem}. Aborting.");
+                    _log.LogWarning($"Missing ingredients to craft {step.ResultItem}. Aborting.");
                     CraftUI.CloseCraftPanel(_activeCraftingController);
                     _craftingRoutine = null;
                     yield break;
@@ -372,10 +398,24 @@ namespace CookBook
 
                 _activeCraftingController.ConfirmSelection();
                 CraftUI.CloseCraftPanel(_activeCraftingController);
+                lastCraftedQuantity = step.ResultCount;
+
+                if (step.ResultItem != ItemIndex.None)
+                {
+                    lastCraftedPickup = PickupCatalog.FindPickupIndex(step.ResultItem);
+                }
+                else if (step.ResultEquipment != EquipmentIndex.None)
+                {
+                    lastCraftedPickup = PickupCatalog.FindPickupIndex(step.ResultEquipment);
+                }
+                else
+                {
+                    lastCraftedPickup = PickupIndex.none;
+                }
 
                 if (craftQueue.Count > 0)
                 {
-                    yield return new WaitForSeconds(_mealPrepTotalDuration + 0.2f);
+                    yield return new WaitForSeconds(0.2f);
                 }
 
             }
@@ -482,6 +522,18 @@ namespace CookBook
             {
                 _log.LogDebug("TakeSnapshot(): Attempted snapshot but inventory doesn't exist.");
             }
+        }
+        internal static int GetOwnedCount(PickupDef def, CharacterBody body)
+        {
+            if (def.itemIndex != ItemIndex.None)
+            {
+                return body.inventory.GetItemCountPermanent(def.itemIndex);
+            }
+            else if (def.equipmentIndex != EquipmentIndex.None)
+            {
+                return body.inventory.currentEquipmentIndex == def.equipmentIndex ? 1 : 0;
+            }
+            return 0;
         }
     }
 }
