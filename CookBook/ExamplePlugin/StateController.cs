@@ -134,14 +134,14 @@ namespace CookBook
             StateController.SetPlanner(planner);
         }
 
-        private static void OnInventoryChanged(int[] itemStacks, int[] equipmentStacks)
+        private static void OnInventoryChanged(int[] unifiedStacks)
         {
             if (_planner == null)
             {
                 _log.LogDebug("StateController.OnInventoryChanged: planner not assigned yet, ignoring.");
                 return;
             }
-            _planner.ComputeCraftable(itemStacks, equipmentStacks);
+            _planner.ComputeCraftable(unifiedStacks);
         }
 
         private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables)
@@ -192,7 +192,7 @@ namespace CookBook
                 return;
             }
 
-            TakeSnapshot(InventoryTracker.GetItemStacksCopy(), InventoryTracker.GetEquipmentStacksCopy());
+            TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
         }
 
         // -------------------- Chef Events --------------------
@@ -246,8 +246,6 @@ namespace CookBook
         }
 
         //-------------------------------- Crafting Logic ----------------------------------
-
-        // Add this inside StateController class
         private static IEnumerator WaitForPendingPickup(PickupIndex pickupIndex, int expectedGain, float timeout = 5.0f)
         {
             if (pickupIndex == PickupIndex.none)
@@ -361,7 +359,13 @@ namespace CookBook
 
                 if (!SubmitIngredients(_activeCraftingController, step))
                 {
-                    _log.LogWarning($"Missing ingredients to craft {step.ResultItem}. Aborting.");
+                    string stepName = "Unknown";
+                    if (step.ResultIndex < ItemCatalog.itemCount)
+                        stepName = ItemCatalog.GetItemDef((ItemIndex)step.ResultIndex)?.nameToken;
+                    else
+                        stepName = EquipmentCatalog.GetEquipmentDef((EquipmentIndex)(step.ResultIndex - ItemCatalog.itemCount))?.nameToken;
+
+                    _log.LogWarning($"Missing ingredients to craft {stepName}. Aborting.");
                     CraftUI.CloseCraftPanel(_activeCraftingController);
                     _craftingRoutine = null;
                     yield break;
@@ -386,17 +390,13 @@ namespace CookBook
                 CraftUI.CloseCraftPanel(_activeCraftingController);
                 lastCraftedQuantity = step.ResultCount;
 
-                if (step.ResultItem != ItemIndex.None)
+                if (step.ResultIndex < ItemCatalog.itemCount)
                 {
-                    lastCraftedPickup = PickupCatalog.FindPickupIndex(step.ResultItem);
-                }
-                else if (step.ResultEquipment != EquipmentIndex.None)
-                {
-                    lastCraftedPickup = PickupCatalog.FindPickupIndex(step.ResultEquipment);
+                    lastCraftedPickup = PickupCatalog.FindPickupIndex((ItemIndex)step.ResultIndex);
                 }
                 else
                 {
-                    lastCraftedPickup = PickupIndex.none;
+                    lastCraftedPickup = PickupCatalog.FindPickupIndex((EquipmentIndex)(step.ResultIndex - ItemCatalog.itemCount));
                 }
 
                 if (craftQueue.Count > 0)
@@ -424,18 +424,18 @@ namespace CookBook
             {
                 PickupIndex targetPickup = PickupIndex.none;
 
-                if (ing.Kind == IngredientKind.Item)
+                if (ing.IsItem)
                 {
-                    targetPickup = PickupCatalog.FindPickupIndex(ing.Item);
+                    targetPickup = PickupCatalog.FindPickupIndex(ing.ItemIndex);
                 }
-                else if (ing.Kind == IngredientKind.Equipment)
+                else
                 {
-                    targetPickup = PickupCatalog.FindPickupIndex(ing.Equipment);
+                    targetPickup = PickupCatalog.FindPickupIndex(ing.EquipIndex);
                 }
 
                 if (targetPickup == PickupIndex.none)
                 {
-                    _log.LogWarning($"[CookBook] Could not resolve pickup for {ing.Kind}");
+                    _log.LogWarning($"[CookBook] Could not resolve pickup for UnifiedIndex {ing.UnifiedIndex}");
                     return false;
                 }
 
@@ -445,7 +445,6 @@ namespace CookBook
                     _log.LogWarning($"[CookBook] FAILED: Player missing required item: {debugName} (PickupIndex: {targetPickup.value})");
                     return false;
                 }
-
 
                 var name = PickupCatalog.GetPickupDef(targetPickup)?.internalName;
                 _log.LogInfo($"[CookBook] Adding ingredient: {name} (ID: {targetPickup.value})");
@@ -486,7 +485,7 @@ namespace CookBook
                 _subscribedInventoryHandler = true;
             }
 
-            TakeSnapshot(InventoryTracker.GetItemStacksCopy(), InventoryTracker.GetEquipmentStacksCopy());
+            TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
         }
 
 
@@ -494,14 +493,11 @@ namespace CookBook
         internal static bool IsChefStage(SceneDef sceneDef) => sceneDef && sceneDef.baseSceneName == "computationalexchange";
         internal static SceneDef GetCurrentScene() => Stage.instance ? Stage.instance.sceneDef : null;
         internal static bool IsChefStage() => IsChefStage(GetCurrentScene());
-        internal static void TakeSnapshot(int[] itemstacks, int[] equipmentstacks)
+        internal static void TakeSnapshot(int[] unifiedStacks)
         {
-            var itemStacks = InventoryTracker.GetItemStacksCopy();
-            var equipmentStacks = InventoryTracker.GetEquipmentStacksCopy();
-
-            if (itemStacks != null && equipmentStacks != null)
+            if (unifiedStacks != null)
             {
-                _planner.ComputeCraftable(itemStacks, equipmentStacks);
+                _planner.ComputeCraftable(unifiedStacks);
                 _log.LogDebug($"TakeSnapshot(): craftable entries = {_lastCraftables.Count}");
             }
             else

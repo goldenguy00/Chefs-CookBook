@@ -11,12 +11,12 @@ namespace CookBook
         // ---------------------- Fields  ----------------------------
         private static bool _initialized;
         private static ManualLogSource _log;
-        private static readonly ItemTier[] DefaultOrder; 
-        private static readonly HashSet<ItemTier> _seenTiers ;
+        private static readonly ItemTier[] DefaultOrder;
+        private static readonly HashSet<ItemTier> _seenTiers;
         private static Dictionary<ItemTier, int> _orderMap;
 
-    // Events
-    internal static event System.Action OnTierOrderChanged;
+        // Events
+        internal static event System.Action OnTierOrderChanged;
 
         // ---------------------- Initialization  ----------------------------
         static TierManager()
@@ -57,7 +57,7 @@ namespace CookBook
         /// <summary>
         /// Collects all tiers used by any item in the ItemCatalog.
         /// </summary>
-        internal static ItemTier[] DiscoverTiersFromCatalog() 
+        internal static ItemTier[] DiscoverTiersFromCatalog()
         {
             var set = new HashSet<ItemTier>(_seenTiers);
             int len = ItemCatalog.itemCount;
@@ -70,7 +70,6 @@ namespace CookBook
                 set.Add(def.tier);
             }
 
-            // Record discovered tiers.
             foreach (var t in set)
             {
                 _seenTiers.Add(t);
@@ -122,25 +121,31 @@ namespace CookBook
             CraftPlanner.CraftableEntry a,
             CraftPlanner.CraftableEntry b)
         {
-            // Group by result kind | items, equipment
-            int kindCmp = a.ResultKind.CompareTo(b.ResultKind);
-            if (kindCmp != 0)
+            bool aIsItem = a.ResultIndex < ItemCatalog.itemCount;
+            bool bIsItem = b.ResultIndex < ItemCatalog.itemCount;
+
+            // Group by type
+            if (aIsItem != bIsItem)
             {
-                return kindCmp;
+                return aIsItem ? -1 : 1;
             }
 
-            // Sort Items
-            if (a.ResultKind == RecipeResultKind.Item)
+            // Both are items
+            if (aIsItem)
             {
-                return CompareItems(a.ResultItem, b.ResultItem);
+                return CompareItems((ItemIndex)a.ResultIndex, (ItemIndex)b.ResultIndex);
             }
-                
-            // Order Equipment Alphabetically
-            var defA = EquipmentCatalog.GetEquipmentDef(a.ResultEquipment);
-            var defB = EquipmentCatalog.GetEquipmentDef(b.ResultEquipment);
 
-            string nameA = defA ? defA.nameToken : a.ResultEquipment.ToString();
-            string nameB = defB ? defB.nameToken : b.ResultEquipment.ToString();
+            // Compare Equipment (Alphabetical)
+            int offset = ItemCatalog.itemCount;
+            var equipA = (EquipmentIndex)(a.ResultIndex - offset);
+            var equipB = (EquipmentIndex)(b.ResultIndex - offset);
+
+            var defA = EquipmentCatalog.GetEquipmentDef(equipA);
+            var defB = EquipmentCatalog.GetEquipmentDef(equipB);
+
+            string nameA = defA ? defA.nameToken : equipA.ToString();
+            string nameB = defB ? defB.nameToken : equipB.ToString();
             return string.Compare(nameA, nameB, StringComparison.Ordinal);
         }
 
@@ -159,7 +164,9 @@ namespace CookBook
             int rankB = Rank(tierB);
             int tierCmp = rankA.CompareTo(rankB);
             if (tierCmp != 0)
+            {
                 return tierCmp;
+            }
 
             string nameA = defA ? defA.nameToken : a.ToString();
             string nameB = defB ? defB.nameToken : b.ToString();
@@ -174,7 +181,6 @@ namespace CookBook
         {
             _seenTiers.Add(tier);
 
-            // If explicitly mapped, use it
             if (_orderMap.TryGetValue(tier, out int rank))
             {
                 return rank;

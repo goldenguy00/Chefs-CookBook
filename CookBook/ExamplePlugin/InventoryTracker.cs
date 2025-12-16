@@ -20,7 +20,7 @@ namespace CookBook
         /// <summary>
         /// Do NOT mutate externally.
         /// </summary>
-        internal static event Action<int[], int[]> OnInventoryChanged;
+        internal static event Action<int[]> OnInventoryChanged;
 
         // ---------------------- Initialization  ----------------------------
 
@@ -193,44 +193,39 @@ namespace CookBook
         {
             int itemLen = ItemCatalog.itemCount;
             int equipLen = EquipmentCatalog.equipmentCount;
+            int totalLen = itemLen + equipLen;
 
+            var unifiedStacks = new int[totalLen];
 
-            var itemstacks = new int[itemLen];
-            var equipmentstacks = new int[equipLen];
-
-            // fill Item snapshot
             for (int i = 0; i < itemLen; i++)
             {
-                itemstacks[i] = inv.GetItemCountPermanent((ItemIndex)i);
+                unifiedStacks[i] = inv.GetItemCountPermanent((ItemIndex)i);
             }
 
-            // fill Equipment snapshot
             int slotCount = inv.GetEquipmentSlotCount();
 
-            // step through all equipment slots, recording all seen equipment
             for (int slot = 0; slot < slotCount; slot++)
             {
-                // set = 0u for the active equipment set
                 var state = inv.GetEquipment((uint)slot, 0u);
                 var eqIndex = state.equipmentIndex;
 
                 if (eqIndex != EquipmentIndex.None)
                 {
-                    int idx = (int)eqIndex;
-                    if ((uint)idx < (uint)equipLen)
+                    int unifiedIndex = itemLen + (int)eqIndex;
+
+                    if (unifiedIndex < totalLen)
                     {
-                        // Each occupied slot counts as 1 of that equipment
-                        equipmentstacks[idx] += 1;
+                        unifiedStacks[unifiedIndex] += 1;
                     }
                 }
             }
 
-            _snapshot = new InventorySnapshot(itemstacks, equipmentstacks);
-            OnInventoryChanged?.Invoke(clone(itemstacks), clone(equipmentstacks)); // Notify listeners without mutating stacks.
+            _snapshot = new InventorySnapshot(unifiedStacks);
+            OnInventoryChanged?.Invoke(Clone(unifiedStacks));
         }
 
         //--------------------------------------- Snapshot Helpers ----------------------------------------
-        private static int[] clone(int[] src)
+        private static int[] Clone(int[] src)
         {
             if (src == null || src.Length == 0)
             {
@@ -242,22 +237,11 @@ namespace CookBook
         }
 
         /// <summary>
-        /// returns a copy of item inventory stacks
+        /// returns a copy of the unified inventory stacks
         /// </summary>
-        internal static int[] GetItemStacksCopy()
+        internal static int[] GetUnifiedStacksCopy()
         {
-            var src = _snapshot.ItemStacks;
-            return (src == null || src.Length == 0)
-                ? Array.Empty<int>()
-                : (int[])src.Clone();
-        }
-
-        /// <summary>
-        /// returns a copy of equipment inventory stacks
-        /// </summary>
-        internal static int[] GetEquipmentStacksCopy()
-        {
-            var src = _snapshot.EquipmentStacks;
+            var src = _snapshot.UnifiedStacks;
             return (src == null || src.Length == 0)
                 ? Array.Empty<int>()
                 : (int[])src.Clone();
@@ -276,17 +260,15 @@ namespace CookBook
     //--------------------------------------- Structs  ----------------------------------------
     /// <summary>
     /// Immutable snapshot of the local player's inventory at a moment in time.
-    /// Contains item and equipment stacks indexed by their respective catalogs.
+    /// Contains Unified stacks (Items + Equipment flattened).
     /// </summary>
     internal readonly struct InventorySnapshot
     {
-        public readonly int[] ItemStacks;
-        public readonly int[] EquipmentStacks;
+        public readonly int[] UnifiedStacks;
 
-        public InventorySnapshot(int[] itemStacks, int[] equipmentStacks)
+        public InventorySnapshot(int[] unifiedStacks)
         {
-            ItemStacks = itemStacks ?? Array.Empty<int>();
-            EquipmentStacks = equipmentStacks ?? Array.Empty<int>();
+            UnifiedStacks = unifiedStacks ?? Array.Empty<int>();
         }
     }
 }

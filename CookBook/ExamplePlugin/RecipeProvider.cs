@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
+using static CookBook.CraftPlanner;
 
 namespace CookBook
 {
@@ -51,12 +52,16 @@ namespace CookBook
         internal static void OnContentPacksAssigned(HG.ReadOnlyArray<ReadOnlyContentPack> _)
         {
             if (_recipesBuilt)
+            {
                 return;
+            }
 
             CraftableCatalog.availability.CallWhenAvailable(() =>
             {
                 if (_recipesBuilt)
+                {
                     return;
+                }
 
                 BuildRecipes();
             });
@@ -77,6 +82,8 @@ namespace CookBook
                 return;
             }
 
+            int itemOffset = ItemCatalog.itemCount;
+
             foreach (var recipeEntry in recipesArray)
             {
                 if (recipeEntry == null)
@@ -84,32 +91,28 @@ namespace CookBook
                     continue;
                 }
 
-                // ---------------- Result pickup ----------------
+                // ---------------- Resolve Result Index ----------------
                 PickupIndex resultPickup = recipeEntry.result;
                 if (!resultPickup.isValid || resultPickup == PickupIndex.none)
                 {
                     continue;
                 }
 
-                PickupDef resultPickupDef = PickupCatalog.GetPickupDef(resultPickup);
-                if (resultPickupDef == null)
+                PickupDef resultDef = PickupCatalog.GetPickupDef(resultPickup);
+                if (resultDef == null)
                 {
                     continue;
                 }
 
-                RecipeResultKind resultKind;
-                ItemIndex resultItemidx = ItemIndex.None;
-                EquipmentIndex resultEquipmentidx = EquipmentIndex.None;
+                int resultIndex = -1;
 
-                if (resultPickupDef.itemIndex != ItemIndex.None)
+                if (resultDef.itemIndex != ItemIndex.None)
                 {
-                    resultKind = RecipeResultKind.Item;
-                    resultItemidx = resultPickupDef.itemIndex;
+                    resultIndex = (int)resultDef.itemIndex;
                 }
-                else if (resultPickupDef.equipmentIndex != EquipmentIndex.None)
+                else if (resultDef.equipmentIndex != EquipmentIndex.None)
                 {
-                    resultKind = RecipeResultKind.Equipment;
-                    resultEquipmentidx = resultPickupDef.equipmentIndex;
+                    resultIndex = itemOffset + (int)resultDef.equipmentIndex;
                 }
                 else
                 {
@@ -118,7 +121,7 @@ namespace CookBook
 
                 int resultCount = recipeEntry.amountToDrop;
 
-                // ---------------- Ingredient pickups ----------------
+                // ---------------- Resolve Ingredient Indices ----------------
                 List<PickupIndex> ingredientPickups = recipeEntry.GetAllPickups();
                 if (ingredientPickups == null || ingredientPickups.Count == 0)
                 {
@@ -140,13 +143,20 @@ namespace CookBook
                         continue;
                     }
 
+                    int ingIndex = -1;
+
                     if (ingDef.itemIndex != ItemIndex.None)
                     {
-                        rawIngredients.Add(new Ingredient(IngredientKind.Item, ingDef.itemIndex, EquipmentIndex.None, 1));
+                        ingIndex = (int)ingDef.itemIndex;
                     }
                     else if (ingDef.equipmentIndex != EquipmentIndex.None)
                     {
-                        rawIngredients.Add(new Ingredient(IngredientKind.Equipment, ItemIndex.None, ingDef.equipmentIndex, 1));
+                        ingIndex = itemOffset + (int)ingDef.equipmentIndex;
+                    }
+
+                    if (ingIndex != -1)
+                    {
+                        rawIngredients.Add(new Ingredient(ingIndex, 1));
                     }
                 }
 
@@ -157,7 +167,7 @@ namespace CookBook
 
                 if (rawIngredients.Count <= 2)
                 {
-                    var recipe = new ChefRecipe(resultKind, resultItemidx, resultEquipmentidx, resultCount, rawIngredients.ToArray());
+                    var recipe = new ChefRecipe(resultIndex, resultCount, rawIngredients.ToArray());
                     _recipes.Add(recipe);
                 }
                 else
@@ -166,10 +176,9 @@ namespace CookBook
                     for (int i = 1; i < rawIngredients.Count; i++)
                     {
                         var variantIng = rawIngredients[i];
-
                         var pair = new Ingredient[] { baseIng, variantIng };
 
-                        var recipe = new ChefRecipe(resultKind, resultItemidx, resultEquipmentidx, resultCount, pair);
+                        var recipe = new ChefRecipe(resultIndex, resultCount, pair);
                         _recipes.Add(recipe);
                     }
                 }
@@ -180,43 +189,34 @@ namespace CookBook
         }
     }
 
-    /// <summary>recipe result type</summary>
-    internal enum RecipeResultKind
-    {
-        Item,
-        Equipment
-    }
-
-    /// <summary>recipe ingredient type</summary>
-    internal enum IngredientKind
-    {
-        Item,
-        Equipment
-    }
-
     // TODO: add clean hashing
     /// <summary>ingredient entry</summary>
     internal readonly struct Ingredient
     {
-        public readonly IngredientKind Kind;
-        public readonly ItemIndex Item;
-        public readonly EquipmentIndex Equipment;
+        public readonly int UnifiedIndex;
         public readonly int Count;
 
-        public Ingredient(IngredientKind kind, ItemIndex item, EquipmentIndex equipment, int count)
+        public Ingredient(int unifiedIndex, int count)
         {
-            Kind = kind;
-            Item = item;
-            Equipment = equipment;
+            UnifiedIndex = unifiedIndex;
             Count = count;
         }
 
+        public bool IsItem => UnifiedIndex < ItemCatalog.itemCount;
+
+        public ItemIndex ItemIndex => IsItem
+            ? (ItemIndex)UnifiedIndex
+            : ItemIndex.None;
+
+        public EquipmentIndex EquipIndex => IsItem
+            ? EquipmentIndex.None
+            : (EquipmentIndex)(UnifiedIndex - ItemCatalog.itemCount);
+
         public override int GetHashCode()
         {
+            // Simple multiplicative hash
             int hash = 17;
-            hash = hash * 31 + (int)Kind;
-            hash = hash * 31 + (int)Item;
-            hash = hash * 31 + (int)Equipment;
+            hash = hash * 31 + UnifiedIndex;
             hash = hash * 31 + Count;
             return hash;
         }
@@ -228,33 +228,21 @@ namespace CookBook
 
         public bool Equals(Ingredient other)
         {
-            return Kind == other.Kind &&
-                   Item == other.Item &&
-                   Equipment == other.Equipment &&
+            return UnifiedIndex == other.UnifiedIndex &&
                    Count == other.Count;
         }
     }
 
-    // TODO: add clean hashing
     /// <summary>result entry</summary>
     internal sealed class ChefRecipe
     {
-        public RecipeResultKind ResultKind { get; }
-        public ItemIndex ResultItem { get; }
-        public EquipmentIndex ResultEquipment { get; }
+        public int ResultIndex { get; }
         public int ResultCount { get; }
         public Ingredient[] Ingredients { get; }
 
-        public ChefRecipe(
-            RecipeResultKind resultKind,
-            ItemIndex resultItem,
-            EquipmentIndex resultEquipment,
-            int resultCount,
-            Ingredient[] ingredients)
+        public ChefRecipe(int resultIndex, int resultCount, Ingredient[] ingredients)
         {
-            ResultKind = resultKind;
-            ResultItem = resultItem;
-            ResultEquipment = resultEquipment;
+            ResultIndex = resultIndex;
             ResultCount = resultCount;
             Ingredients = ingredients;
         }
@@ -286,15 +274,14 @@ namespace CookBook
         {
             int hash = 17;
 
-            hash = hash * 31 + (int)ResultKind;
-            hash = hash * 31 + (int)ResultItem;
-            hash = hash * 31 + (int)ResultEquipment;
+            hash = hash * 31 + ResultIndex;
             hash = hash * 31 + ResultCount;
 
             hash = hash * 31 + GetIngredientsCanonicalHash();
 
             return hash;
         }
+
         public override bool Equals(object obj)
         {
             return obj is ChefRecipe other && Equals(other);
@@ -304,9 +291,7 @@ namespace CookBook
         {
             if (other == null) return false;
 
-            if (ResultKind != other.ResultKind ||
-                ResultItem != other.ResultItem ||
-                ResultEquipment != other.ResultEquipment ||
+            if (ResultIndex != other.ResultIndex ||
                 ResultCount != other.ResultCount)
             {
                 return false;
