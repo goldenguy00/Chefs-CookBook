@@ -2,9 +2,6 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using RoR2;
-using RoR2.ContentManagement;
-using static RoR2.Console;
-
 namespace CookBook
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]

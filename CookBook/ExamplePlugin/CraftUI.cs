@@ -10,6 +10,8 @@ using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using static CookBook.CraftPlanner;
 
+
+// TODO: set up alternate hover borders to mirror vanilla RoR2 aesthetic
 namespace CookBook
 {
     internal static class CraftUI
@@ -256,7 +258,6 @@ namespace CookBook
             _panelHeight = cbRT.rect.height;
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            PullChefIcon(craftingPanel);
             CookBookSkeleton(cbRT);
             EnsureResultSlotArtTemplates(craftingPanel);
             EnsureIngredientSlotTemplate();
@@ -269,78 +270,6 @@ namespace CookBook
 
             if (_lastCraftables != null && _lastCraftables.Count > 0) PopulateRecipeList(_lastCraftables);
         }
-
-        internal static void PullChefIcon(CraftingPanel craftingPanel)
-        {
-            if (craftingPanel == null) return;
-
-            Transform mainContainer = craftingPanel.transform.Find("MainPanel/Juice/BGContainer/BGMain/LabelContainer")?.GetComponent<RectTransform>();
-
-            if (mainContainer == null)
-            {
-                CookBook.Log.LogError("PullChefIcon: Main container not found.");
-                return;
-            }
-
-            int count = 0;
-            CookBook.Log.LogInfo("Starting recursive icon extraction...");
-
-            SearchAndExtract(mainContainer, "ChefUI_Asset", ref count);
-
-            CookBook.Log.LogInfo($"Icon extraction complete. Found and saved {count} assets.");
-        }
-
-        private static void SearchAndExtract(Transform parent, string baseName, ref int count)
-        {
-            foreach (Transform child in parent)
-            {
-                Image imageComponent = child.GetComponent<Image>();
-
-                if (imageComponent != null && imageComponent.sprite != null && imageComponent.sprite.texture != null)
-                {
-                    SaveImage(imageComponent, baseName, count);
-                    count++;
-                }
-                SearchAndExtract(child, baseName, ref count);
-            }
-        }
-
-        private static void SaveImage(Image image, string baseName, int index)
-        {
-            if (image == null || image.sprite == null || image.sprite.texture == null)
-            {
-                return;
-            }
-
-            Texture2D texture = image.sprite.texture;
-
-            try
-            {
-                byte[] bytes = texture.EncodeToPNG();
-
-                string fileName = $"{baseName}_{index}_{texture.width}x{texture.height}.png";
-                string path = System.IO.Path.Combine(
-                    BepInEx.Paths.PluginPath,
-                    "ExtractedAssets",
-                    fileName
-                );
-
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
-
-                File.WriteAllBytes(path, bytes);
-                CookBook.Log.LogInfo($"Extracted icon to: {path}");
-            }
-            catch (UnityException ex)
-            {
-                // Handle non-readable texture errors gracefully
-                CookBook.Log.LogWarning($"Failed to extract {baseName}_{index}. Texture may not be readable. Error: {ex.Message}");
-            }
-            catch (System.Exception ex)
-            {
-                CookBook.Log.LogError($"General error during extraction: {ex.Message}");
-            }
-        }
-
 
         internal static void Detach()
         {
@@ -545,11 +474,6 @@ namespace CookBook
                 if (instant) BackgroundImage.color = targetColor;
                 else fader.CrossFadeColor(targetColor, FadeDuration, ignoreTimeScale: true);
             }
-
-            private void OnEnable()
-            {
-                UpdateVisuals(true);
-            }
         }
 
         private class NestedScrollRect : ScrollRect
@@ -644,19 +568,7 @@ namespace CookBook
             }
 
             //------------------------ Border ------------------------
-            GameObject frameClone = UnityEngine.Object.Instantiate(UnityEngine.Object.FindObjectOfType<CraftingPanel>().transform.Find("MainPanel/Juice/BGContainer/CraftingContainer/Background").gameObject, _cookbookRoot.transform);
-            frameClone.name = "CookBookBorder";
-            var borderRect = frameClone.GetComponent<RectTransform>();
-            borderRect.anchorMin = new Vector2(0f, 0f);
-            borderRect.anchorMax = new Vector2(1f, 1f);
-            borderRect.pivot = new Vector2(0.5f, 0.5f);
-            borderRect.anchoredPosition = Vector2.zero;
-            borderRect.sizeDelta = Vector2.zero;
-
-            // strip out the crafting contents
-            foreach (Transform child in frameClone.transform) UnityEngine.Object.Destroy(child.gameObject);
-            // ensure stays top level
-            borderRect.SetAsLastSibling();
+            AddBorderTapered((RectTransform)_cookbookRoot.transform, new Color32(209, 209, 210, 255), 2f, 2f);
 
             // ----------------------------- Dimensions ------------------------------
             float padTopPx = RoundToEven(CookBookPanelPaddingTopNorm * _panelHeight);
@@ -1240,7 +1152,7 @@ namespace CookBook
             float totalRowHeightPx = visualHeightPx + spacingPx;
             float paddingY = RoundToEven(spacingPx / 2f);
 
-            var rowGO = CreateUIObject("PathRowTemplate", typeof(RectTransform), typeof(Image), typeof(LayoutElement), typeof(PathRowRuntime), typeof(Button), typeof(EventTrigger));
+            var rowGO = CreateUIObject("PathRowTemplate", typeof(RectTransform), typeof(Image), typeof(LayoutElement), typeof(Button), typeof(EventTrigger), typeof(PathRowRuntime));
 
             var rowRT = (RectTransform)rowGO.transform;
             var rowLE = rowGO.GetComponent<LayoutElement>();
@@ -1944,7 +1856,6 @@ namespace CookBook
         }
 
         //=========================== Coroutines =========================== 
-        // TODO: perf analysis
         internal static void PopulateRecipeList(IReadOnlyList<CraftableEntry> craftables)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1966,7 +1877,8 @@ namespace CookBook
             }
             if (vlg) vlg.enabled = false;
 
-            float previousScrollPos = scrollRect != null ? scrollRect.verticalNormalizedPosition : 0f;
+            bool hasItems = _recipeListContent.childCount > 0;
+            float previousScrollPos = (scrollRect != null && hasItems) ? scrollRect.verticalNormalizedPosition : 1f;
 
             if (_selectionReticle != null)
             {
