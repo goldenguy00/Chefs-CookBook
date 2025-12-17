@@ -4,8 +4,21 @@
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<LangVersion>preview</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<BaseOutputPath>C:\Users\logan\AppData\Roaming\r2modmanPlus-local\RiskOfRain2\profiles\Default\BepInEx\plugins\CookBook</BaseOutputPath>
+		<BaseOutputPath>C:\Users\logan\Desktop\Personal Projects\LBurnsUF\Chefs-CookBook\CookBook</BaseOutputPath>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Include="CraftPlanner.cs" />
+		<Compile Include="CraftUI.cs" />
+		<Compile Include="DialogueHooks.cs" />
+		<Compile Include="InventoryTracker.cs" />
+		<Compile Include="Log.cs" />
+		<Compile Include="Plugin.cs" />
+		<Compile Include="RecipeProvider.cs" />
+		<Compile Include="SettingsUI.cs" />
+		<Compile Include="StateController.cs" />
+		<Compile Include="TierManager.cs" />
+	</ItemGroup>
 
 	<ItemGroup>
 
