@@ -4,6 +4,28 @@ Dates are listed in `MM/DD/YY` format.
 
 ---
 
+## v1.2.0 — 12/27/25
+### Added
+- Added Drone scrap support.
+- Added **Objectives** to make Crafting State more clear to the user.
+- Added a **hotkey** for aborting a craft. Currently set to holding *left alt*. Will be configurable eventually once I get around to it.
+### Fixed
+- Replaced usage of massive int arrays with sparse dictionaries to greatly reduce memory usage. (11 GB game usage -> ~3.6 with identical inventory).
+- No longer fully rebuilds paths on inventory change, preserves unchanged paths from previous snapshot.
+- Reduced menu rendering time by nearly a factor of 4 in typical scenarios via sparse reads.
+- Fixed the pathrow buttons consuming scroll actions (no one mentioned this somehow :sob:)
+### Changed
+- Reduced pressure on garbage collection from reinitializing a bunch of arrays for calculating chain costs,. Now uses a "scratchpad" that just repeatedly gets cleared (no repeated initialization calls).
+- Reworked path planning to take a lazy approach to reduce passive mem usage.
+
+---
+
+## v1.1.0 — 12/18/25
+### Fixed
+- Updated README to include visuals (Why doesn't Thunderstore allow edits?)
+
+---
+
 ## v1.0.0 — 12/18/25
 ### Release
 - First stable public release
@@ -28,7 +50,6 @@ Dates are listed in `MM/DD/YY` format.
 ### Added
 - Completed automated crafting system
 - Crafting automation now relies on **user pickup events** rather than fixed delays
-
 ### Changed
 - Removed naive time-based polling for inventory checks
 

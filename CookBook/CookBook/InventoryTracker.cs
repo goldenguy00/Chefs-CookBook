@@ -1,6 +1,7 @@
 ﻿using BepInEx.Logging;
 using RoR2;
 using System;
+using System.Collections.Generic;
 
 namespace CookBook
 {
@@ -20,19 +21,52 @@ namespace CookBook
 
         // Events
         /// <summary>
-        /// Do NOT mutate externally.
+        /// Fires when the combined (Physical + Drone) inventory changes.
         /// </summary>
         internal static event Action<int[]> OnInventoryChanged;
 
+        private static readonly Dictionary<ItemTier, ItemIndex> _tierToScrapItemIdx = new();
+        private static readonly Dictionary<int, DroneIndex> _scrapToBestCandidate = new();
         // ---------------------- Initialization  ----------------------------
 
         internal static void Init(ManualLogSource log)
         {
-            if (_initialized)
-                return;
+            if (_initialized) return;
 
             _initialized = true;
             _log = log;
+
+            PickupCatalog.availability.CallWhenAvailable(BuildScrapLookup);
+        }
+
+        private static void BuildScrapLookup()
+        {
+            _tierToScrapItemIdx.Clear();
+
+            foreach (ItemTier tier in Enum.GetValues(typeof(ItemTier)))
+            {
+                if (tier == ItemTier.AssignedAtRuntime || tier == ItemTier.NoTier) continue;
+
+                PickupIndex scrapPickup = PickupCatalog.FindScrapIndexForItemTier(tier);
+
+                if (scrapPickup != PickupIndex.none)
+                {
+                    ItemIndex itemIndex = PickupCatalog.GetPickupDef(scrapPickup)?.itemIndex ?? ItemIndex.None;
+
+                    if (itemIndex != ItemIndex.None)
+                    {
+                        _tierToScrapItemIdx[tier] = itemIndex;
+                        _log.LogDebug($"Mapped Tier {tier} -> Scrap Item: {itemIndex}");
+                    }
+                }
+            }
+            _log.LogInfo($"InventoryTracker: Native mapping complete. {_tierToScrapItemIdx.Count} tiers supported.");
+        }
+
+        private static int MapTierToScrapIndex(ItemTier tier)
+        {
+            if (_tierToScrapItemIdx.TryGetValue(tier, out var index)) return (int)index;
+            return -1;
         }
 
         //--------------------------------------- Status Control ----------------------------------------
@@ -41,22 +75,15 @@ namespace CookBook
         /// </summary>
         internal static void Enable()
         {
-            if (_enabled)
-                return;
-
+            if (_enabled) return;
             _enabled = true;
-
-            // clear stale user
             _localInventory = null;
             _snapshot = default;
 
             CharacterBody.onBodyStartGlobal += OnBodyStart;
+            MinionOwnership.onMinionGroupChangedGlobal += OnMinionGroupChanged;
 
-            if (TryBindFromExistingBodies())
-            {
-                CharacterBody.onBodyStartGlobal -= OnBodyStart;
-                _log.LogInfo("InventoryTracker: unsubscribed from onBodyStartGlobal (binding complete)");
-            }
+            if (TryBindFromExistingBodies()) CharacterBody.onBodyStartGlobal -= OnBodyStart;
         }
 
         /// <summary>
@@ -64,11 +91,11 @@ namespace CookBook
         /// </summary>
         internal static void Disable()
         {
-            if (!_enabled)
-                return;
-
+            if (!_enabled) return;
             _enabled = false;
+
             CharacterBody.onBodyStartGlobal -= OnBodyStart;
+            MinionOwnership.onMinionGroupChangedGlobal += OnMinionGroupChanged;
 
             // clear stale user
             if (_localInventory != null)
@@ -79,168 +106,186 @@ namespace CookBook
             _snapshot = default;
         }
 
+        //--------------------------------------- Event Logic ----------------------------------------
+        private static void OnMinionGroupChanged(MinionOwnership minion)
+        {
+            if (!_enabled || _localInventory == null || minion == null) return;
+
+            var master = _localInventory.GetComponent<CharacterMaster>();
+            if (!master) return;
+
+            var myGroup = MinionOwnership.MinionGroup.FindGroup(master.netId);
+
+            if (minion.group == myGroup)
+            {
+                var minionMaster = minion.GetComponent<CharacterMaster>();
+                if (minionMaster && minionMaster.bodyPrefab)
+                {
+                    var bodyComponent = minionMaster.bodyPrefab.GetComponent<CharacterBody>();
+                    if (bodyComponent)
+                    {
+                        DroneIndex droneIdx = DroneCatalog.GetDroneIndexFromBodyIndex(bodyComponent.bodyIndex);
+                        DroneDef droneDef = DroneCatalog.GetDroneDef(droneIdx);
+
+                        if (droneDef != null && droneDef.canScrap)
+                        {
+                            _log.LogDebug($"[DroneUpdate] {droneDef.droneIndex} (Tier {droneDef.tier}) changed. Rebuilding Planner.");
+                            OnLocalInventoryChanged();
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void OnLocalInventoryChanged()
+        {
+            if (!_enabled || _localInventory == null) return;
+            SnapshotFromInventory(_localInventory);
+        }
+
+        //--------------------------------------- Snapshot Logic  ----------------------------------------
+        private static void SnapshotFromInventory(Inventory inv)
+        {
+            _scrapToBestCandidate.Clear();
+
+            int itemLen = ItemCatalog.itemCount;
+            LastItemCountUsed = itemLen;
+            int totalLen = itemLen + EquipmentCatalog.equipmentCount;
+
+            var physical = new int[totalLen];
+            var dronePotential = new int[totalLen];
+
+            for (int i = 0; i < itemLen; i++) physical[i] = inv.GetItemCountPermanent((ItemIndex)i);
+
+            int slotCount = inv.GetEquipmentSlotCount();
+            for (int slot = 0; slot < slotCount; slot++)
+            {
+                var state = inv.GetEquipment((uint)slot, 0u);
+                if (state.equipmentIndex != EquipmentIndex.None)
+                {
+                    int unifiedIndex = itemLen + (int)state.equipmentIndex;
+                    if (unifiedIndex < totalLen) physical[unifiedIndex] += 1;
+                }
+            }
+
+            var master = inv.GetComponent<CharacterMaster>();
+            var body = master ? master.GetBody() : null;
+            if (body)
+            {
+                dronePotential = CalculateDroneScrapPotential(body, _scrapToBestCandidate);
+            }
+
+            var total = new int[totalLen];
+            for (int i = 0; i < totalLen; i++) total[i] = physical[i] + dronePotential[i];
+
+            _snapshot = new InventorySnapshot(
+                physical,
+                dronePotential,
+                total,
+                new Dictionary<int, DroneIndex>(_scrapToBestCandidate)
+            );
+
+            OnInventoryChanged?.Invoke((int[])total.Clone());
+        }
+
+        private static int[] CalculateDroneScrapPotential(CharacterBody body, Dictionary<int, DroneIndex> candidateMap)
+        {
+            int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
+            int[] droneStacks = new int[totalLen];
+
+            Dictionary<int, int> lowestUpgradeSeen = new();
+
+            CharacterBody[] minions = body.GetMinionBodies();
+            if (minions == null) return droneStacks;
+
+            foreach (var minionBody in minions)
+            {
+                if (!minionBody || !minionBody.healthComponent.alive) continue;
+
+                DroneIndex droneIdx = DroneCatalog.GetDroneIndexFromBodyIndex(minionBody.bodyIndex);
+                DroneDef droneDef = DroneCatalog.GetDroneDef(droneIdx);
+
+                if (droneDef != null && droneDef.canScrap)
+                {
+                    int scrapIdx = MapTierToScrapIndex(droneDef.tier);
+                    if (scrapIdx != -1)
+                    {
+                        int upgradeCount = minionBody.inventory
+                            ? minionBody.inventory.GetItemCountEffective(DLC3Content.Items.DroneUpgradeHidden)
+                            : 0;
+
+                        droneStacks[scrapIdx] += DroneUpgradeUtils.GetDroneCountFromUpgradeCount(upgradeCount);
+
+                        if (!lowestUpgradeSeen.TryGetValue(scrapIdx, out int currentMin) || upgradeCount < currentMin)
+                        {
+                            lowestUpgradeSeen[scrapIdx] = upgradeCount;
+                            candidateMap[scrapIdx] = droneIdx;
+                        }
+                    }
+                }
+            }
+            return droneStacks;
+        }
+
+        /// <summary>
+        /// Returns the ID of the cheapest owned drone that provides this scrap tier.
+        /// </summary>
+        internal static DroneIndex GetScrapCandidate(int scrapIdx)
+        {
+            if (_snapshot.CheapestDrones != null && _snapshot.CheapestDrones.TryGetValue(scrapIdx, out var id))
+                return id;
+            return DroneIndex.None;
+        }
+
+        internal static int GetPhysicalCount(int index) => (_snapshot.PhysicalStacks != null && index < _snapshot.PhysicalStacks.Length) ? _snapshot.PhysicalStacks[index] : 0;
+        internal static int GetDronePotentialCount(int index) => (_snapshot.DronePotential != null && index < _snapshot.DronePotential.Length) ? _snapshot.DronePotential[index] : 0;
+        internal static int[] GetUnifiedStacksCopy() => (_snapshot.TotalStacks != null) ? (int[])_snapshot.TotalStacks.Clone() : Array.Empty<int>();
+
         //----------------------------------- Binding Logic -----------------------------------
         /// <summary>
         /// Binds to localuser when body is spawned, ignoring other bodies.
         /// </summary>
         private static void OnBodyStart(CharacterBody body)
         {
-            if (!_enabled || body == null)
-                return;
+            if (!_enabled || body == null || !body.master) return;
+            var networkUser = body.master.playerCharacterMasterController?.networkUser;
+            if (networkUser && networkUser.localUser == GetLocalUser())
+            {
+                CharacterBody.onBodyStartGlobal -= OnBodyStart;
+                _log.LogInfo("InventoryTracker.OnBodyStart(): Binding complete, unsubscribed from onBodyStartGlobal.");
 
-            var master = body.master;
-            if (!master)
-                return;
-
-            var pcmc = master.playerCharacterMasterController;
-            if (!pcmc)
-                return;
-
-            var networkUser = pcmc.networkUser;
-            if (!networkUser)
-                return;
-
-            var localUser = GetLocalUser();
-            if (networkUser.localUser != localUser)
-                return;
-
-            // Only care about the local player's body.
-            if (networkUser.localUser != localUser)
-                return;
-
-            var inv = body.inventory;
-            if (inv == null)
-                return;
-
-            CharacterBody.onBodyStartGlobal -= OnBodyStart;
-            _log.LogDebug("InventoryTracker.OnBodyStart(): Bound to local player inventory (OnBodyStart event).");
-            _log.LogInfo("InventoryTracker.OnBodyStart(): Binding complete, unsubscribed from onBodyStartGlobal.");
-
-            //rebind to local inventory, can occur if player fab gets altered or someone makes a poorly written mod
-            RebindLocal(inv);
-            SnapshotFromInventory(_localInventory);
+                RebindLocal(body.inventory);
+                SnapshotFromInventory(_localInventory);
+            }
         }
-
 
         // Fallback Binding (late enable)
         private static bool TryBindFromExistingBodies()
         {
             var localUser = GetLocalUser();
-            if (localUser == null)
-            {
-                _log.LogDebug("InventoryTracker.TryBindFromExistingBodies(): no LocalUsers present");
-                return false;
-            }
-
-            // iterate over all existing bodies to find local player
+            if (localUser == null) return false;
             foreach (var body in CharacterBody.readOnlyInstancesList)
             {
-                if (!body || body.inventory == null) continue;
+                if (body && body.inventory && body.master?.playerCharacterMasterController?.networkUser?.localUser == localUser)
+                {
+                    _log.LogInfo($"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}.");
 
-                var master = body.master;
-                if (!master) continue;
-
-                var pcmc = master.playerCharacterMasterController;
-                if (!pcmc) continue;
-
-                var networkUser = pcmc.networkUser;
-                if (!networkUser) continue;
-                if (networkUser.localUser != localUser) continue;
-
-                _log.LogInfo($"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}.");
-
-                RebindLocal(body.inventory);
-                SnapshotFromInventory(_localInventory);
-                return true;
+                    RebindLocal(body.inventory);
+                    SnapshotFromInventory(_localInventory);
+                    return true;
+                }
             }
-
             _log.LogDebug("InventoryTracker.TryBindFromExistingBodies(): no matching local body found.");
             return false;
         }
 
         private static void RebindLocal(Inventory inv)
         {
-            if (_localInventory != null && _localInventory != inv)
-                _localInventory.onInventoryChanged -= OnLocalInventoryChanged;
-
+            if (_localInventory != null && _localInventory != inv) _localInventory.onInventoryChanged -= OnLocalInventoryChanged;
             _localInventory = inv;
-
-            if (_localInventory != null)
-                _localInventory.onInventoryChanged += OnLocalInventoryChanged;
+            if (_localInventory != null) _localInventory.onInventoryChanged += OnLocalInventoryChanged;
         }
 
-        //--------------------------------------- Event Logic ----------------------------------------
-        private static void OnLocalInventoryChanged()
-        {
-            if (!_enabled || _localInventory == null)
-            {
-                return;
-            }
-
-            SnapshotFromInventory(_localInventory);
-        }
-
-        //--------------------------------------- Snapshot Handling ----------------------------------------
-        private static void SnapshotFromInventory(Inventory inv)
-        {
-            int itemLen = ItemCatalog.itemCount;
-            LastItemCountUsed = itemLen;
-            int equipLen = EquipmentCatalog.equipmentCount;
-            int totalLen = itemLen + equipLen;
-
-            var unifiedStacks = new int[totalLen];
-
-            for (int i = 0; i < itemLen; i++)
-            {
-                unifiedStacks[i] = inv.GetItemCountPermanent((ItemIndex)i);
-            }
-
-            int slotCount = inv.GetEquipmentSlotCount();
-
-            for (int slot = 0; slot < slotCount; slot++)
-            {
-                var state = inv.GetEquipment((uint)slot, 0u);
-                var eqIndex = state.equipmentIndex;
-
-                if (eqIndex != EquipmentIndex.None)
-                {
-                    int unifiedIndex = itemLen + (int)eqIndex;
-
-                    if (unifiedIndex < totalLen)
-                    {
-                        unifiedStacks[unifiedIndex] += 1;
-                    }
-                }
-            }
-
-            _snapshot = new InventorySnapshot(unifiedStacks);
-            OnInventoryChanged?.Invoke(Clone(unifiedStacks));
-        }
-
-        //--------------------------------------- Snapshot Helpers ----------------------------------------
-        private static int[] Clone(int[] src)
-        {
-            if (src == null || src.Length == 0)
-            {
-                return Array.Empty<int>();
-            }
-            var copy = new int[src.Length];
-            Array.Copy(src, copy, src.Length);
-            return copy;
-        }
-
-        /// <summary>
-        /// returns a copy of the unified inventory stacks
-        /// </summary>
-        internal static int[] GetUnifiedStacksCopy()
-        {
-            var src = _snapshot.UnifiedStacks;
-            return (src == null || src.Length == 0)
-                ? Array.Empty<int>()
-                : (int[])src.Clone();
-        }
-
-        //--------------------------------------- General Helpers  ----------------------------------------
         /// <summary>
         /// get the first local user
         /// </summary>
@@ -249,7 +294,10 @@ namespace CookBook
             var list = LocalUserManager.readOnlyLocalUsersList;
             return list.Count > 0 ? list[0] : null;
         }
+
+        // TODO: add get all player characters
     }
+
     //--------------------------------------- Structs  ----------------------------------------
     /// <summary>
     /// Immutable snapshot of the local player's inventory at a moment in time.
@@ -257,11 +305,18 @@ namespace CookBook
     /// </summary>
     internal readonly struct InventorySnapshot
     {
-        public readonly int[] UnifiedStacks;
+        public readonly int[] PhysicalStacks;
+        public readonly int[] DronePotential;
+        public readonly int[] TotalStacks;
 
-        public InventorySnapshot(int[] unifiedStacks)
+        public readonly Dictionary<int, DroneIndex> CheapestDrones;
+
+        public InventorySnapshot(int[] physical, int[] drone, int[] total, Dictionary<int, DroneIndex> cheapest)
         {
-            UnifiedStacks = unifiedStacks ?? Array.Empty<int>();
+            PhysicalStacks = physical ?? Array.Empty<int>();
+            DronePotential = drone ?? Array.Empty<int>();
+            TotalStacks = total ?? Array.Empty<int>();
+            CheapestDrones = cheapest ?? new Dictionary<int, DroneIndex>();
         }
     }
 }

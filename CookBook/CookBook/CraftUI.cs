@@ -10,7 +10,6 @@ using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using static CookBook.CraftPlanner;
 
-
 // TODO: set up alternate hover borders to mirror vanilla RoR2 aesthetic
 namespace CookBook
 {
@@ -18,7 +17,6 @@ namespace CookBook
     {
         private static ManualLogSource _log;
         private static IReadOnlyList<CraftableEntry> _lastCraftables;
-        private static readonly List<RecipeRowUI> _recipeRowUIs = new();
         private static bool _skeletonBuilt = false;
         private static CraftingController _currentController;
 
@@ -52,6 +50,10 @@ namespace CookBook
 
         private static Sprite _solidPointSprite;
         private static Sprite _taperedGradientSprite;
+
+        private static readonly Dictionary<int, Sprite> _iconCache = new();
+        private static readonly Dictionary<DroneIndex, Sprite> _droneIconCache = new();
+        private static readonly List<RecipeRowUI> _recipeRowUIs = new();
 
         // ---------------- Layout constants ----------------
         private static float _panelWidth;
@@ -228,7 +230,6 @@ namespace CookBook
                 }
             }
 
-
             float boundsHeight = RoundToEven(contentBounds.size.y);
             float boundsCenterY = RoundToEven(contentBounds.center.y);
 
@@ -277,13 +278,19 @@ namespace CookBook
             {
                 UnityEngine.Object.Destroy(_cookbookRoot);
                 _cookbookRoot = null;
-                _log.LogInfo("CraftUI.Detach: CookBook panel destroyed.");
             }
+
             if (_globalCraftButton != null) _globalCraftButton.onClick.RemoveAllListeners();
+            _recipeRowUIs.Clear();
+            _iconCache.Clear();
+            _droneIconCache.Clear();
 
             _currentController = null;
             _skeletonBuilt = false;
             _recipeListContent = null;
+            _openRow = null;
+            _activeBuildRoutine = null;
+            _activeDropdownRoutine = null;
         }
 
         internal static void CloseCraftPanel(CraftingController specificController = null)
@@ -292,13 +299,19 @@ namespace CookBook
 
             if (!target) return;
 
-            var openPanels = UnityEngine.Object.FindObjectsOfType<CraftingPanel>();
+            if (_runner != null && _activeBuildRoutine != null)
+            {
+                _runner.StopCoroutine(_activeBuildRoutine);
+                _activeBuildRoutine = null;
+            }
 
+            var openPanels = UnityEngine.Object.FindObjectsOfType<CraftingPanel>();
             foreach (var panel in openPanels)
             {
                 if (panel.craftingController == target)
                 {
                     UnityEngine.Object.Destroy(panel.gameObject);
+                    Detach();
                     return;
                 }
             }
@@ -341,7 +354,7 @@ namespace CookBook
                     RowTopButton.onClick.RemoveAllListeners();
                 }
                 Entry = null;
-                if (_openRow == this) _openRow = null;
+                _openRow = null;
             }
         }
 
@@ -354,6 +367,7 @@ namespace CookBook
             public Button pathButton;
             public EventTrigger buttonEvent;
             private ColorFaderRuntime fader;
+            public ScrollRect parentScroll;
 
             private bool isSelected;
             private bool isHovered;
@@ -375,10 +389,13 @@ namespace CookBook
                 {
                     buttonEvent = GetComponent<EventTrigger>();
                 }
-
                 if (pathButton != null)
                 {
                     pathButton.onClick.AddListener(OnClicked);
+                }
+                if (parentScroll == null)
+                {
+                    parentScroll = GetComponentInParent<ScrollRect>();
                 }
 
                 EventTrigger.Entry entryEnter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
@@ -387,6 +404,9 @@ namespace CookBook
                 EventTrigger.Entry entryExit = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
                 entryExit.callback.AddListener((data) => OnHighlightChanged(false));
                 buttonEvent.triggers.Add(entryExit);
+                EventTrigger.Entry entryScroll = new EventTrigger.Entry { eventID = EventTriggerType.Scroll };
+                entryScroll.callback.AddListener((data) => BubbleScroll(data));
+                buttonEvent.triggers.Add(entryScroll);
 
                 if (VisualRect == null)
                 {
@@ -448,6 +468,13 @@ namespace CookBook
                     if (IsReticleAttachedTo(VisualRect)) RestoreReticleToSelection();
                 }
                 UpdateVisuals(false);
+            }
+            private void BubbleScroll(BaseEventData data)
+            {
+                if (parentScroll != null && data is PointerEventData pointerData)
+                {
+                    parentScroll.OnScroll(pointerData);
+                }
             }
 
             public void SetSelected(bool selected)
@@ -875,15 +902,29 @@ namespace CookBook
             if (runtime != null) runtime.Init(owner, chain);
             else _log.LogError("PathRowTemplate missing PathRowRuntime component.");
 
-            if (chain.TotalCost != null)
+            if (chain.PhysicalCostSparse != null)
             {
-                for (int i = 0; i < chain.TotalCost.Length; i++)
+                foreach (var ingredient in chain.PhysicalCostSparse)
                 {
-                    int count = chain.TotalCost[i];
-                    if (count <= 0) continue;
+                    Sprite icon = GetIcon(ingredient.UnifiedIndex);
+                    if (icon != null) CreateIngredientSlot(runtime.VisualRect, icon, ingredient.Count);
+                }
+            }
 
-                    Sprite icon = GetIcon(i);
-                    if (icon != null) CreateIngredientSlot(runtime.VisualRect, icon, count);
+            if (chain.DroneCostSparse != null)
+            {
+                foreach (var ingredient in chain.DroneCostSparse)
+                {
+                    DroneIndex ownedDroneIdx = InventoryTracker.GetScrapCandidate(ingredient.UnifiedIndex);
+
+                    if (ownedDroneIdx != DroneIndex.None)
+                    {
+                        Sprite droneSprite = GetDroneIcon(ownedDroneIdx);
+                        if (droneSprite != null)
+                        {
+                            CreateIngredientSlot(runtime.VisualRect, droneSprite, ingredient.Count);
+                        }
+                    }
                 }
             }
             return pathRowGO;
@@ -2203,12 +2244,32 @@ namespace CookBook
 
         private static Sprite GetIcon(int unifiedIndex)
         {
-            if (unifiedIndex < ItemCatalog.itemCount) return ItemCatalog.GetItemDef((ItemIndex)unifiedIndex)?.pickupIconSprite;
+            if (_iconCache.TryGetValue(unifiedIndex, out var sprite)) return sprite;
+
+            if (unifiedIndex < ItemCatalog.itemCount)
+                sprite = ItemCatalog.GetItemDef((ItemIndex)unifiedIndex)?.pickupIconSprite;
             else
             {
                 int equipIdx = unifiedIndex - ItemCatalog.itemCount;
-                return EquipmentCatalog.GetEquipmentDef((EquipmentIndex)equipIdx)?.pickupIconSprite;
+                sprite = EquipmentCatalog.GetEquipmentDef((EquipmentIndex)equipIdx)?.pickupIconSprite;
             }
+
+            if (sprite != null) _iconCache[unifiedIndex] = sprite;
+            return sprite;
+        }
+
+        private static Sprite GetDroneIcon(DroneIndex droneIndex)
+        {
+            if (_droneIconCache.TryGetValue(droneIndex, out var sprite)) return sprite;
+
+            var def = DroneCatalog.GetDroneDef(droneIndex);
+            if (def != null && def.iconSprite != null)
+            {
+                sprite = def.iconSprite;
+                _droneIconCache[droneIndex] = sprite;
+                return sprite;
+            }
+            return null;
         }
 
         private static Color GetEntryColor(CraftableEntry entry)

@@ -33,7 +33,8 @@ Instead of mentally tracking multi-step recipes or juggling external spreadsheet
 - The search bar filters results in real time
 - Result counts are displayed inline, appended as `[xN]`
 - Expand a recipe row, select the path you want, then select **Craft**
-  - The full chain of crafts will be completed automatically
+- Hold *left alt* to cancel an in progress craft
+ - The full chain of crafts will be completed automatically
 
 ---
 

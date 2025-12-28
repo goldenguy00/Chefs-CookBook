@@ -2,6 +2,8 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using RoR2;
+using System.Runtime.CompilerServices;
+
 namespace CookBook
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
@@ -11,7 +13,7 @@ namespace CookBook
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "rainorshine";
         public const string PluginName = "CookBook";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.2.0";
 
         internal static ManualLogSource Log;
         private const int DefaultMaxDepth = 5;
@@ -21,6 +23,7 @@ namespace CookBook
 
         public void Awake()
         {
+
             Log = Logger;
             Log.LogInfo("CookBook: Awake()");
 
@@ -69,14 +72,13 @@ namespace CookBook
             TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged;
 
             // Init subsystems
-            // TODO: Initialize settings UI via SettingsUI.cs
+            // TODO: Initialize settings UI via SettingsUI.cs, actually work with RiskOfOptions ffs
             RecipeProvider.Init(Log); // Parse all chef recipe rules
             StateController.Init(Log); // Initialize chef/state logic
             DialogueHooks.Init(Log); // Initialize all Chef Dialogue Hooks
             InventoryTracker.Init(Log); // Begin waiting for Enable signal
             CraftUI.Init(Log); // Initialize craft UI injection
 
-            // Subscribe to Chef dialogue events
             DialogueHooks.ChefUiOpened += StateController.OnChefUiOpened;
             DialogueHooks.ChefUiClosed += StateController.OnChefUiClosed;
         }

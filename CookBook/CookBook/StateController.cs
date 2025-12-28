@@ -20,30 +20,26 @@ namespace CookBook
         private static bool _initialized = false;
         private static bool _subscribedInventoryHandler = false;
         internal static SceneDef _laststage = null;
-        private static CraftingController _activeCraftingController;
+
         private static List<CraftPlanner.CraftableEntry> _lastCraftables = new List<CraftPlanner.CraftableEntry>();
+        private static GameObject _runnerGO;
+        private static StateRunner _craftingHandler;
+        private static Coroutine _throttleRoutine;
 
         // Crafting Parameters
-        internal static bool IsAutoCrafting => _craftingRoutine != null;
-        private static GameObject _targetCraftingObject;
-        private static Coroutine _craftingRoutine;
-        private static GameObject _runnerGO;
-        private static MonoBehaviour _craftingHandler;
+        internal static CraftingController ActiveCraftingController { get; private set; }
+        internal static GameObject TargetCraftingObject { get; private set; }
+        internal static bool IsAutoCrafting => CraftingExecutionHandler.IsAutoCrafting;
 
         // Events
         internal static event Action<IReadOnlyList<CraftPlanner.CraftableEntry>> OnCraftablesForUIChanged;
         internal static event Action OnChefStageEntered;
         internal static event Action OnChefStageExited;
 
-        private class StateRunner : MonoBehaviour { }
-
         //--------------------------- LifeCycle -------------------------------
         internal static void Init(ManualLogSource log)
         {
-            if (_initialized)
-            {
-                return;
-            }
+            if (_initialized) return;
 
             _log = log;
             _initialized = true;
@@ -55,6 +51,10 @@ namespace CookBook
             Run.onRunStartGlobal += OnRunStart;
             Run.onRunDestroyGlobal += OnRunDestroy;
             Stage.onStageStartGlobal += OnStageStart;
+
+            DialogueHooks.Init(_log);
+            DialogueHooks.ChefUiOpened += OnChefUiOpened;
+            DialogueHooks.ChefUiClosed += OnChefUiClosed;
         }
 
         /// <summary>
@@ -66,6 +66,10 @@ namespace CookBook
             Run.onRunDestroyGlobal -= OnRunDestroy;
             Stage.onStageStartGlobal -= OnStageStart;
 
+            DialogueHooks.ChefUiOpened -= OnChefUiOpened;
+            DialogueHooks.ChefUiClosed -= OnChefUiClosed;
+            DialogueHooks.Shutdown();
+
             InventoryTracker.Disable();
             InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
             _subscribedInventoryHandler = false;
@@ -76,22 +80,14 @@ namespace CookBook
         }
 
         /// <summary>
-        /// Called whenever a new Stage instance starts.
+        /// Called whenever a new Stage instance starts. 
         /// </summary>
         internal static void OnStageStart(Stage stage)
         {
             var sceneDef = stage ? stage.sceneDef : null;
-
-            if (IsChefStage(sceneDef))
-            {
-                OnChefStageEntered?.Invoke();
-            }
-            else if (IsChefStage(_laststage))
-            {
-                OnChefStageExited?.Invoke();
-            }
-
-            _laststage = sceneDef; // update last stage
+            if (IsChefStage(sceneDef)) OnChefStageEntered?.Invoke();
+            else if (IsChefStage(_laststage)) OnChefStageExited?.Invoke();
+            _laststage = sceneDef;
         }
 
         /// <summary>
@@ -99,8 +95,8 @@ namespace CookBook
         /// </summary>
         private static void OnRunStart(Run run)
         {
-            StateController.OnChefStageEntered += EnableChef;
-            StateController.OnChefStageExited += DisableChef;
+            OnChefStageEntered += EnableChef;
+            OnChefStageExited += DisableChef;
             _craftingHandler = _runnerGO.AddComponent<StateRunner>();
         }
 
@@ -117,8 +113,8 @@ namespace CookBook
 
             CraftUI.Detach();
 
-            StateController.OnChefStageEntered -= EnableChef;
-            StateController.OnChefStageExited -= DisableChef;
+            OnChefStageEntered -= EnableChef;
+            OnChefStageExited -= DisableChef;
 
             _subscribedInventoryHandler = false;
             _lastCraftables.Clear();
@@ -127,88 +123,50 @@ namespace CookBook
             InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
         }
 
+
         // -------------------- CookBook Handshake Events --------------------
-        internal static void OnRecipesBuilt(System.Collections.Generic.IReadOnlyList<ChefRecipe> recipes)
+        internal static void OnRecipesBuilt(IReadOnlyList<ChefRecipe> recipes)
         {
             var planner = new CraftPlanner(recipes, CookBook.MaxDepth.Value, _log);
-            StateController.SetPlanner(planner);
+            SetPlanner(planner);
         }
 
-        private static void OnInventoryChanged(int[] unifiedStacks)
-        {
-            if (InventoryTracker.LastItemCountUsed != _planner.SourceItemCount)
-            {
-                _log.LogWarning("Catalog Shift Detected, Rebuilding Recipes.");
-                RecipeProvider.Rebuild();
-                return;
-            }
-            _planner.ComputeCraftable(unifiedStacks);
-        }
+        private static void OnInventoryChanged(int[] unifiedStacks) => QueueThrottledCompute(unifiedStacks);
 
         private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables)
         {
             _lastCraftables = craftables;
-
-            if (!StateController.IsChefStage())
-            {
-                return;
-            }
-
-            OnCraftablesForUIChanged?.Invoke(_lastCraftables);
+            if (IsChefStage()) OnCraftablesForUIChanged?.Invoke(_lastCraftables);
         }
 
         internal static void OnTierOrderChanged()
         {
-            if (_lastCraftables == null || _lastCraftables.Count == 0)
-            {
-                return;
-            }
-
-            if (!StateController.IsChefStage())
-            {
-                return;
-            }
-
+            if (_lastCraftables == null || !IsChefStage()) return;
             _lastCraftables.Sort(TierManager.CompareCraftableEntries);
             OnCraftablesForUIChanged?.Invoke(_lastCraftables);
         }
 
         internal static void OnMaxDepthChanged(object _, EventArgs __)
         {
-            if (_planner == null)
-            {
-                _log?.LogDebug("OnMaxDepthChanged(): planner is null, ignoring.");
-                return;
-            }
-
-            int newDepth = CookBook.MaxDepth.Value;
-            _log?.LogInfo($"OnMaxDepthChanged(): updated planner max depth to {newDepth}.");
-
-            _planner.SetMaxDepth(newDepth);
-            _planner.RebuildAllPlans();
-
-            if (!IsChefStage())
-            {
-                _log?.LogDebug("OnMaxDepthChanged(): Maxdepth changed but not on chef stage, ommitting snapshot.");
-                return;
-            }
-
-            TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
+            if (_planner == null) return;
+            _planner.SetMaxDepth(CookBook.MaxDepth.Value);
+            if (IsChefStage()) QueueThrottledCompute(InventoryTracker.GetUnifiedStacksCopy());
         }
 
         // -------------------- Chef Events --------------------
         private static void EnableChef()
         {
-            _log.LogInfo("enabling InventoryTracker and subscribing to inventory events.");
+            _log.LogInfo("Chef controller enabled.");
 
             if (!_subscribedInventoryHandler)
             {
                 InventoryTracker.OnInventoryChanged += OnInventoryChanged;
                 _subscribedInventoryHandler = true;
             }
-
+            CraftingObjectiveTracker.Init();
+            CraftingExecutionHandler.Init(_log, _craftingHandler);
             InventoryTracker.Enable();
-            _targetCraftingObject = null;
+            TargetCraftingObject = null;
         }
 
         private static void DisableChef()
@@ -220,303 +178,117 @@ namespace CookBook
                 InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
                 _subscribedInventoryHandler = false;
             }
-
+            CraftingExecutionHandler.Abort();
+            CraftingObjectiveTracker.Cleanup();
             InventoryTracker.Disable();
         }
 
         internal static void OnChefUiOpened(CraftingController controller)
         {
-            if (!IsChefStage())
-            {
-                return;
-            }
+            if (!IsChefStage()) return;
 
-            _activeCraftingController = controller;
-            _targetCraftingObject = controller.gameObject;
+            ActiveCraftingController = controller;
+            TargetCraftingObject = controller.gameObject;
 
-            if (!IsAutoCrafting)
-            {
-                CraftUI.Attach(_activeCraftingController);
-            }
+            if (!IsAutoCrafting) CraftUI.Attach(ActiveCraftingController);
         }
 
         internal static void OnChefUiClosed(CraftingController controller)
         {
-            CraftUI.Detach();
-            _activeCraftingController = null;
+            if (ActiveCraftingController == controller)
+            {
+                _log.LogInfo("Chef UI closed (Observer triggered). Clearing state.");
+                CraftUI.Detach();
+                ActiveCraftingController = null;
+            }
         }
 
-        //-------------------------------- Crafting Logic ----------------------------------
-        private static IEnumerator WaitForPendingPickup(PickupIndex pickupIndex, int expectedGain, float timeout = 5.0f)
+        //-------------------------------- Craft Handling ----------------------------------
+        internal static void RequestCraft(CraftPlanner.RecipeChain chain)
         {
-            if (pickupIndex == PickupIndex.none)
-            {
-                yield break;
-            }
-
-            var body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
-
-            if (!body || !body.inventory)
-            {
-                yield break;
-            }
-
-            var def = PickupCatalog.GetPickupDef(pickupIndex);
-            if (def == null)
-            {
-                yield break;
-            }
-
-            var name = def.internalName;
-            _log.LogDebug($"[Chain] Waiting for result: {name} (Index: {pickupIndex.value}, quantity {expectedGain})...");
-
-            int targetCount = GetOwnedCount(def, body) + expectedGain;
-
-            float timer = 0f;
-
-            while (timer < timeout)
-            {
-                int currentCount = GetOwnedCount(def, body);
-                if (currentCount >= targetCount)
-                {
-                    _log.LogInfo($"[Chain] Confirmed pickup of {name} (Reached {currentCount}/{targetCount}). Proceeding.");
-                    yield break;
-                }
-
-                timer += Time.fixedDeltaTime;
-                yield return new WaitForFixedUpdate();
-            }
-
-            _log.LogWarning($"[Chain] Timed out waiting for {name}. Did the user not collect all items?");
+            if (ActiveCraftingController == null || chain == null) return;
+            CraftingExecutionHandler.ExecuteChain(chain);
         }
 
-        internal static void RequestCraft(RecipeChain chain)
+        internal static void AbortCraft()
         {
-            if (_activeCraftingController == null)
-            {
-                _log.LogDebug("Attemmpted to initiate a craft but no active crafting controller.");
-                return;
-            }
-            if (chain == null)
-            {
-                _log.LogDebug("Attemmpted to initiate a craft but no valid crafting chain.");
-                return;
-            }
-
             if (IsAutoCrafting)
             {
-                _log.LogDebug("Craft already in progress, killing previous chain.");
-                _craftingHandler.StopCoroutine(_craftingRoutine);
+                _log.LogInfo("User requested Abort.");
+                CraftingExecutionHandler.Abort();
             }
-
-            _craftingRoutine = _craftingHandler.StartCoroutine(CraftChainRoutine(chain));
         }
 
-        private static IEnumerator CraftChainRoutine(RecipeChain chain)
+        private class StateRunner : MonoBehaviour
         {
-            Queue<ChefRecipe> craftQueue = new Queue<ChefRecipe>(chain.Steps.Reverse());
-            _log.LogInfo($"[StateController] Headless craft started. {chain.Steps.Count} steps remaining.");
+            private float _abortTimer = 0f;
+            private const float ABORT_THRESHOLD = 0.6f;
 
-            var interactor = LocalUserManager.GetFirstLocalUser()?.cachedBody?.GetComponent<Interactor>();
-            PickupIndex lastCraftedPickup = PickupIndex.none;
-            int lastCraftedQuantity = 0;
-
-            while (craftQueue.Count > 0)
+            private void Update()
             {
-                if (!_targetCraftingObject)
+                if (StateController.IsAutoCrafting)
                 {
-                    _log.LogError("Cannot find crafting object. Aborting.");
-                    yield break;
-                }
-
-                if (!interactor) yield break;
-
-                if (lastCraftedPickup != PickupIndex.none)
-                {
-                    yield return WaitForPendingPickup(lastCraftedPickup, lastCraftedQuantity, 5.0f);
-                }
-
-                float uiTimeout = 2.0f;
-                while (_activeCraftingController == null && uiTimeout > 0)
-                {
-                    if (interactor) interactor.AttemptInteraction(_targetCraftingObject);
-
-                    for (int i = 0; i < 5; i++)
+                    if (Input.GetKey(KeyCode.LeftAlt))
                     {
-                        if (_activeCraftingController != null) break;
-                        yield return new WaitForFixedUpdate();
+                        _abortTimer += Time.deltaTime;
+                        if (_abortTimer >= ABORT_THRESHOLD)
+                        {
+                            StateController.AbortCraft();
+                            _abortTimer = 0f;
+                        }
                     }
-                    uiTimeout -= 0.1f;
-                }
-
-                if (_activeCraftingController == null)
-                {
-                    _log.LogError("Failed to re-open Crafting menu. Aborting chain.");
-                    yield break;
-                }
-
-                ChefRecipe step = craftQueue.Dequeue();
-                _activeCraftingController.ClearAllSlots();
-
-                if (!SubmitIngredients(_activeCraftingController, step))
-                {
-                    string stepName = "Unknown";
-                    if (step.ResultIndex < ItemCatalog.itemCount)
-                        stepName = ItemCatalog.GetItemDef((ItemIndex)step.ResultIndex)?.nameToken;
                     else
-                        stepName = EquipmentCatalog.GetEquipmentDef((EquipmentIndex)(step.ResultIndex - ItemCatalog.itemCount))?.nameToken;
-
-                    _log.LogWarning($"Missing ingredients to craft {stepName}. Aborting.");
-                    CraftUI.CloseCraftPanel(_activeCraftingController);
-                    _craftingRoutine = null;
-                    yield break;
+                    {
+                        _abortTimer = 0f;
+                    }
                 }
-
-                float confirmTimeout = 2.0f;
-                while (!_activeCraftingController.AllSlotsFilled() && confirmTimeout > 0)
-                {
-                    confirmTimeout -= Time.fixedDeltaTime;
-                    yield return new WaitForFixedUpdate();
-                }
-
-                if (!_activeCraftingController.AllSlotsFilled())
-                {
-                    _log.LogError("Slots did not fill in time, aborting.");
-                    CraftUI.CloseCraftPanel(_activeCraftingController);
-                    _craftingRoutine = null;
-                    yield break;
-                }
-
-                _activeCraftingController.ConfirmSelection();
-                CraftUI.CloseCraftPanel(_activeCraftingController);
-                lastCraftedQuantity = step.ResultCount;
-
-                if (step.ResultIndex < ItemCatalog.itemCount)
-                {
-                    lastCraftedPickup = PickupCatalog.FindPickupIndex((ItemIndex)step.ResultIndex);
-                }
-                else
-                {
-                    lastCraftedPickup = PickupCatalog.FindPickupIndex((EquipmentIndex)(step.ResultIndex - ItemCatalog.itemCount));
-                }
-
-                if (craftQueue.Count > 0)
-                {
-                    yield return new WaitForSeconds(0.2f);
-                }
-
             }
-            _craftingRoutine = null;
-            _log.LogInfo("[StateController] Chain Complete.");
-
         }
 
-        private static bool SubmitIngredients(CraftingController controller, ChefRecipe recipe)
-        {
-            var options = controller.options;
-
-            HashSet<PickupIndex> availablePickups = new HashSet<PickupIndex>();
-            for (int i = 0; i < options.Length; i++)
-            {
-                if (options[i].available) availablePickups.Add(options[i].pickup.pickupIndex);
-            }
-
-            foreach (var ing in recipe.Ingredients)
-            {
-                PickupIndex targetPickup = PickupIndex.none;
-
-                if (ing.IsItem)
-                {
-                    targetPickup = PickupCatalog.FindPickupIndex(ing.ItemIndex);
-                }
-                else
-                {
-                    targetPickup = PickupCatalog.FindPickupIndex(ing.EquipIndex);
-                }
-
-                if (targetPickup == PickupIndex.none)
-                {
-                    _log.LogWarning($"[CookBook] Could not resolve pickup for UnifiedIndex {ing.UnifiedIndex}");
-                    return false;
-                }
-
-                if (!availablePickups.Contains(targetPickup))
-                {
-                    var debugName = PickupCatalog.GetPickupDef(targetPickup)?.internalName ?? "Unknown";
-                    _log.LogWarning($"[CookBook] FAILED: Player missing required item: {debugName} (PickupIndex: {targetPickup.value})");
-                    return false;
-                }
-
-                var name = PickupCatalog.GetPickupDef(targetPickup)?.internalName;
-                _log.LogInfo($"[CookBook] Adding ingredient: {name} (ID: {targetPickup.value})");
-
-                controller.SendToSlot(targetPickup.value);
-            }
-
-            return true;
-        }
-
-        //--------------------------------------- Planning Helpers ----------------------------------------
+        //--------------------------------------- Helpers ----------------------------------------
         /// <summary>
         /// Set the planner for a given StateController.
         /// </summary>
         internal static void SetPlanner(CraftPlanner planner)
         {
-            if (_planner != null)
+            if (_planner != null) _planner.OnCraftablesUpdated -= OnCraftablesUpdated;
+            _planner = planner;
+            if (_planner != null) _planner.OnCraftablesUpdated += OnCraftablesUpdated;
+            if (IsChefStage())
             {
-                _planner.OnCraftablesUpdated -= OnCraftablesUpdated;
+                if (!_subscribedInventoryHandler)
+                {
+                    InventoryTracker.OnInventoryChanged += OnInventoryChanged;
+                    _subscribedInventoryHandler = true;
+                }
+                TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
             }
-
-            _planner = planner; // overwrite stale planner
-            _log.LogInfo("StateController.SetPlanner(): CraftPlanner assigned.");
-
-            if (_planner != null)
-            {
-                _planner.OnCraftablesUpdated += OnCraftablesUpdated;
-            }
-
-            if (!IsChefStage())
-            {
-                return;
-            }
-
-            if (!_subscribedInventoryHandler)
-            {
-                InventoryTracker.OnInventoryChanged += OnInventoryChanged;
-                _subscribedInventoryHandler = true;
-            }
-
-            TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
         }
 
+        private static void QueueThrottledCompute(int[] unifiedStacks)
+        {
+            if (_throttleRoutine != null) _craftingHandler.StopCoroutine(_throttleRoutine);
+            _throttleRoutine = _craftingHandler.StartCoroutine(ThrottledComputeRoutine(unifiedStacks));
+        }
 
-        //--------------------------------------- Generic Helpers ----------------------------------------
+        //--------------------------------------- Coroutines ---------------------------------------------
+        private static System.Collections.IEnumerator ThrottledComputeRoutine(int[] unifiedStacks)
+        {
+            yield return new WaitForSecondsRealtime(0.15f);
+            if (_planner == null) yield break;
+            if (InventoryTracker.LastItemCountUsed != _planner.SourceItemCount)
+            {
+                RecipeProvider.Rebuild();
+                _throttleRoutine = null;
+                yield break;
+            }
+            _planner.ComputeCraftable(unifiedStacks);
+            _throttleRoutine = null;
+        }
+
         internal static bool IsChefStage(SceneDef sceneDef) => sceneDef && sceneDef.baseSceneName == "computationalexchange";
+        internal static bool IsChefStage() => IsChefStage(Stage.instance ? Stage.instance.sceneDef : null);
+        internal static void TakeSnapshot(int[] unifiedStacks) => _planner?.ComputeCraftable(unifiedStacks);
         internal static SceneDef GetCurrentScene() => Stage.instance ? Stage.instance.sceneDef : null;
-        internal static bool IsChefStage() => IsChefStage(GetCurrentScene());
-        internal static void TakeSnapshot(int[] unifiedStacks)
-        {
-            if (unifiedStacks != null)
-            {
-                _planner.ComputeCraftable(unifiedStacks);
-                _log.LogDebug($"TakeSnapshot(): craftable entries = {_lastCraftables.Count}");
-            }
-            else
-            {
-                _log.LogDebug("TakeSnapshot(): Attempted snapshot but inventory doesn't exist.");
-            }
-        }
-        internal static int GetOwnedCount(PickupDef def, CharacterBody body)
-        {
-            if (def.itemIndex != ItemIndex.None)
-            {
-                return body.inventory.GetItemCountPermanent(def.itemIndex);
-            }
-            else if (def.equipmentIndex != EquipmentIndex.None)
-            {
-                return body.inventory.currentEquipmentIndex == def.equipmentIndex ? 1 : 0;
-            }
-            return 0;
-        }
     }
 }
