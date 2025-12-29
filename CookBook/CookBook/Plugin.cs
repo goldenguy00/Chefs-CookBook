@@ -4,8 +4,6 @@ using BepInEx.Logging;
 using RoR2;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.CompilerServices;
 using UnityEngine;
 using static CookBook.TierManager;
 
@@ -118,12 +116,12 @@ namespace CookBook
             MaxDepth.SettingChanged += StateController.OnMaxDepthChanged;
             TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged;
             RecipeProvider.OnRecipesBuilt += StateController.OnRecipesBuilt;
-
             RecipeProvider.Init(Log); // Parse all chef recipe rules
             StateController.Init(Log); // Initialize chef/state logic
             DialogueHooks.Init(Log); // Initialize all Chef Dialogue Hooks
             InventoryTracker.Init(Log); // Begin waiting for Enable signal
             CraftUI.Init(Log); // Initialize craft UI injection
+            ChatNetworkHandler.Init(Log);
 
             DialogueHooks.ChefUiOpened += StateController.OnChefUiOpened;
             DialogueHooks.ChefUiClosed += StateController.OnChefUiClosed;

@@ -54,6 +54,8 @@ namespace CookBook
 
             DialogueHooks.ChefUiOpened += OnChefUiOpened;
             DialogueHooks.ChefUiClosed += OnChefUiClosed;
+
+            ChatNetworkHandler.OnIncomingObjective += OnNetworkObjectiveReceived;
         }
 
         /// <summary>
@@ -72,6 +74,9 @@ namespace CookBook
             InventoryTracker.Disable();
             InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
             _subscribedInventoryHandler = false;
+
+            ChatNetworkHandler.OnIncomingObjective -= OnNetworkObjectiveReceived;
+            ChatNetworkHandler.Disable();
 
             _planner = null;
             _runnerGO = null;
@@ -96,6 +101,8 @@ namespace CookBook
         {
             OnChefStageEntered += EnableChef;
             OnChefStageExited += DisableChef;
+
+            ChatNetworkHandler.Enable();
             _craftingHandler = _runnerGO.AddComponent<StateRunner>();
         }
 
@@ -118,12 +125,18 @@ namespace CookBook
             _subscribedInventoryHandler = false;
             _lastCraftables.Clear();
 
+            ChatNetworkHandler.Disable();
+
             InventoryTracker.Disable();
             InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
         }
 
-
         // -------------------- CookBook Handshake Events --------------------
+        private static void OnNetworkObjectiveReceived(NetworkUser sender, string command, int unifiedIdx, int quantity)
+        {
+            CraftingObjectiveTracker.AddAlliedRequest(sender, command, unifiedIdx, quantity);
+        }
+
         internal static void OnRecipesBuilt(IReadOnlyList<ChefRecipe> recipes)
         {
             var planner = new CraftPlanner(recipes, CookBook.MaxDepth.Value, _log);
@@ -211,10 +224,11 @@ namespace CookBook
 
         internal static void AbortCraft()
         {
-            if (IsAutoCrafting)
+            if (IsAutoCrafting || CraftingObjectiveTracker.HasActiveObjectives())
             {
-                _log.LogInfo("User requested Abort.");
+
                 CraftingExecutionHandler.Abort();
+                CraftingObjectiveTracker.ClearAllObjectives();
             }
         }
 

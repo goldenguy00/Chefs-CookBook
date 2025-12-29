@@ -2,6 +2,7 @@
 using RoR2;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace CookBook
 {
@@ -26,7 +27,7 @@ namespace CookBook
         internal static event Action<int[]> OnInventoryChanged;
 
         private static readonly Dictionary<ItemTier, ItemIndex> _tierToScrapItemIdx = new();
-        private static readonly Dictionary<int, DroneIndex> _scrapToBestCandidate = new();
+        private static readonly Dictionary<int, DroneCandidate> _globalScrapCandidates = new();
         // ---------------------- Initialization  ----------------------------
 
         internal static void Init(ManualLogSource log)
@@ -151,70 +152,46 @@ namespace CookBook
         {
             if (!_enabled || _localInventory == null) return;
 
-            _scrapToBestCandidate.Clear();
-            int itemLen = ItemCatalog.itemCount;
-            LastItemCountUsed = itemLen;
-            int totalLen = itemLen + EquipmentCatalog.equipmentCount;
+            _globalScrapCandidates.Clear();
+            int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
 
             int[] localPhysical = GetUnifiedStacksFor(_localInventory);
-            int[] dronePotential = CalculateDroneScrapPotential(_localInventory.GetComponent<CharacterMaster>()?.GetBody(), _scrapToBestCandidate);
+            int[] globalDronePotential = new int[totalLen];
 
-            int[] combinedTotal = new int[totalLen];
-            for (int i = 0; i < totalLen; i++) combinedTotal[i] = localPhysical[i] + dronePotential[i];
+            int[] combinedTotal = (int[])localPhysical.Clone();
+
+            var localUser = GetLocalUser()?.currentNetworkUser;
+            AccumulateGlobalDrones(localUser, globalDronePotential);
 
             if (CookBook.AllowMultiplayerPooling.Value)
             {
-                var localUser = GetLocalUser();
                 foreach (var playerController in PlayerCharacterMasterController.instances)
                 {
                     var netUser = playerController.networkUser;
-                    if (!netUser || netUser.localUser == localUser) continue;
+                    if (!netUser || netUser.localUser == GetLocalUser()) continue;
 
-                    var master = playerController.master;
-                    if (!master || !master.inventory) continue;
-
-                    if (TradeTracker.GetRemainingTrades(netUser) > 0)
-                    {
-                        int[] alliedStacks = GetUnifiedStacksFor(master.inventory);
-                        for (int i = 0; i < totalLen; i++) combinedTotal[i] += alliedStacks[i];
-                    }
+                    AccumulateGlobalDrones(netUser, globalDronePotential);
                 }
             }
 
-            _snapshot = new InventorySnapshot(localPhysical, dronePotential, combinedTotal, new Dictionary<int, DroneIndex>(_scrapToBestCandidate));
+            for (int i = 0; i < totalLen; i++) combinedTotal[i] += globalDronePotential[i];
+
+            _snapshot = new InventorySnapshot(
+                localPhysical,
+                globalDronePotential,
+                combinedTotal,
+                new Dictionary<int, DroneCandidate>(_globalScrapCandidates)
+            );
             OnInventoryChanged?.Invoke((int[])combinedTotal.Clone());
         }
 
-        private static int[] GetUnifiedStacksFor(Inventory inv)
+        private static void AccumulateGlobalDrones(NetworkUser user, int[] globalPotentialBuffer)
         {
-            int itemLen = ItemCatalog.itemCount;
-            int totalLen = itemLen + EquipmentCatalog.equipmentCount;
-            int[] stacks = new int[totalLen];
+            if (!user || !user.master) return;
 
-            for (int i = 0; i < itemLen; i++) stacks[i] = inv.GetItemCountPermanent((ItemIndex)i);
-
-            int slotCount = inv.GetEquipmentSlotCount();
-            for (int slot = 0; slot < slotCount; slot++)
-            {
-                var state = inv.GetEquipment((uint)slot, 0u);
-                if (state.equipmentIndex != EquipmentIndex.None)
-                {
-                    int unifiedIndex = itemLen + (int)state.equipmentIndex;
-                    if (unifiedIndex < totalLen) stacks[unifiedIndex] += 1;
-                }
-            }
-            return stacks;
-        }
-
-        private static int[] CalculateDroneScrapPotential(CharacterBody body, Dictionary<int, DroneIndex> candidateMap)
-        {
-            int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
-            int[] droneStacks = new int[totalLen];
-
-            Dictionary<int, int> lowestUpgradeSeen = new();
-
-            CharacterBody[] minions = body.GetMinionBodies();
-            if (minions == null) return droneStacks;
+            // Find all minions owned by this master
+            var minions = CharacterBody.readOnlyInstancesList
+                .Where(b => b.master && b.master.minionOwnership.ownerMaster == user.master);
 
             foreach (var minionBody in minions)
             {
@@ -232,17 +209,20 @@ namespace CookBook
                             ? minionBody.inventory.GetItemCountEffective(DLC3Content.Items.DroneUpgradeHidden)
                             : 0;
 
-                        droneStacks[scrapIdx] += DroneUpgradeUtils.GetDroneCountFromUpgradeCount(upgradeCount);
+                        globalPotentialBuffer[scrapIdx] += DroneUpgradeUtils.GetDroneCountFromUpgradeCount(upgradeCount);
 
-                        if (!lowestUpgradeSeen.TryGetValue(scrapIdx, out int currentMin) || upgradeCount < currentMin)
+                        if (!_globalScrapCandidates.TryGetValue(scrapIdx, out var best) || upgradeCount < best.UpgradeCount)
                         {
-                            lowestUpgradeSeen[scrapIdx] = upgradeCount;
-                            candidateMap[scrapIdx] = droneIdx;
+                            _globalScrapCandidates[scrapIdx] = new DroneCandidate
+                            {
+                                Owner = user,
+                                DroneIdx = droneIdx,
+                                UpgradeCount = upgradeCount
+                            };
                         }
                     }
                 }
             }
-            return droneStacks;
         }
 
         //----------------------------------- Binding Logic -----------------------------------
@@ -300,6 +280,30 @@ namespace CookBook
         }
 
         //--------------------------------- Helpers ------------------------------------------
+        private static int[] GetUnifiedStacksFor(Inventory inv)
+        {
+            int itemLen = ItemCatalog.itemCount;
+            int totalLen = itemLen + EquipmentCatalog.equipmentCount;
+            int[] stacks = new int[totalLen];
+
+            for (int i = 0; i < itemLen; i++) stacks[i] = inv.GetItemCountPermanent((ItemIndex)i);
+
+            int slotCount = inv.GetEquipmentSlotCount();
+            for (int slot = 0; slot < slotCount; slot++)
+            {
+                var state = inv.GetEquipment((uint)slot, 0u);
+                if (state.equipmentIndex != EquipmentIndex.None)
+                {
+                    int unifiedIndex = itemLen + (int)state.equipmentIndex;
+                    if (unifiedIndex < totalLen) stacks[unifiedIndex] += 1;
+                }
+            }
+            return stacks;
+        }
+
+        internal static int GetGlobalDronePotentialCount(int index) =>
+            (_snapshot.DronePotential != null && index < _snapshot.DronePotential.Length) ? _snapshot.DronePotential[index] : 0;
+
         private static int MapTierToScrapIndex(ItemTier tier)
         {
             if (_tierToScrapItemIdx.TryGetValue(tier, out var index)) return (int)index;
@@ -309,11 +313,11 @@ namespace CookBook
         /// <summary>
         /// Returns the ID of the cheapest owned drone that provides this scrap tier.
         /// </summary>
-        internal static DroneIndex GetScrapCandidate(int scrapIdx)
+        internal static DroneCandidate GetScrapCandidate(int scrapIdx)
         {
-            if (_snapshot.CheapestDrones != null && _snapshot.CheapestDrones.TryGetValue(scrapIdx, out var id))
-                return id;
-            return DroneIndex.None;
+            if (_snapshot.CheapestDrones != null && _snapshot.CheapestDrones.TryGetValue(scrapIdx, out var candidate))
+                return candidate;
+            return default;
         }
 
         internal static int GetPhysicalCount(int index) => (_snapshot.PhysicalStacks != null && index < _snapshot.PhysicalStacks.Length) ? _snapshot.PhysicalStacks[index] : 0;
@@ -367,14 +371,20 @@ namespace CookBook
         public readonly int[] DronePotential;
         public readonly int[] TotalStacks;
 
-        public readonly Dictionary<int, DroneIndex> CheapestDrones;
+        public readonly Dictionary<int, DroneCandidate> CheapestDrones;
 
-        public InventorySnapshot(int[] physical, int[] drone, int[] total, Dictionary<int, DroneIndex> cheapest)
+        public InventorySnapshot(int[] physical, int[] drone, int[] total, Dictionary<int, DroneCandidate> cheapest)
         {
             PhysicalStacks = physical ?? Array.Empty<int>();
             DronePotential = drone ?? Array.Empty<int>();
             TotalStacks = total ?? Array.Empty<int>();
-            CheapestDrones = cheapest ?? new Dictionary<int, DroneIndex>();
+            CheapestDrones = cheapest ?? new Dictionary<int, DroneCandidate>();
         }
+    }
+    internal struct DroneCandidate
+    {
+        public NetworkUser Owner;
+        public DroneIndex DroneIdx;
+        public int UpgradeCount;
     }
 }
