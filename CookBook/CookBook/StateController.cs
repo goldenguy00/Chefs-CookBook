@@ -201,10 +201,9 @@ namespace CookBook
             ActiveCraftingController = controller;
             TargetCraftingObject = controller.gameObject;
 
-            if (!IsAutoCrafting && !BatchMode)
-            {
-                CraftUI.Attach(ActiveCraftingController);
-            }
+            if (IsAutoCrafting) return;
+
+            CraftUI.Attach(ActiveCraftingController);
         }
 
         internal static void OnChefUiClosed(CraftingController controller)

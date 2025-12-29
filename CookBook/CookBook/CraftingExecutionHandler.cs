@@ -120,9 +120,7 @@ namespace CookBook
 
             while (craftQueue.Count > 0)
             {
-                body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
-                var interactor = body?.GetComponent<Interactor>();
-
+                // 1. Existing pickup logic
                 if (lastPickup != PickupIndex.none)
                 {
                     var def = PickupCatalog.GetPickupDef(lastPickup);
@@ -132,107 +130,96 @@ namespace CookBook
                     lastPickup = PickupIndex.none;
                 }
 
-                SetObjectiveText("Approach Wandering CHEF");
-
+                // 2. Re-interaction loop: If UI is closed, re-open it
                 while (StateController.ActiveCraftingController == null)
                 {
-                    if (!StateController.TargetCraftingObject || !body)
+                    body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
+                    var interactor = body?.GetComponent<Interactor>();
+
+                    if (!StateController.TargetCraftingObject || !body || !interactor)
                     {
+                        _log.LogWarning("Lost target or body during assembly. Aborting.");
                         Abort();
                         yield break;
                     }
 
+                    SetObjectiveText("Approach Wandering CHEF");
                     float maxDist = interactor.maxInteractionDistance + 6f;
                     float distSqr = (body.corePosition - StateController.TargetCraftingObject.transform.position).sqrMagnitude;
 
-                    if (distSqr > (maxDist * maxDist))
+                    if (distSqr <= (maxDist * maxDist))
                     {
-                        yield return new WaitForSeconds(0.2f);
-                        continue;
+                        var targetCanvas = StateController.TargetCraftingObject.GetComponentInChildren<Canvas>();
+                        if (targetCanvas)
+                        {
+                            _log.LogDebug("Disabling the UI component.");
+
+                            targetCanvas.enabled = false;
+                        }
+                        else
+                        {
+                            _log.LogDebug("targetCanvas is null.");
+
+                        }
+                        interactor.AttemptInteraction(StateController.TargetCraftingObject);
                     }
-
-                    if (interactor) interactor.AttemptInteraction(StateController.TargetCraftingObject);
-                    for (int i = 0; i < 5; i++)
-                    {
-                        if (StateController.ActiveCraftingController != null) break;
-                        yield return new WaitForFixedUpdate();
-                    }
-                    if (StateController.ActiveCraftingController == null) yield return new WaitForSeconds(0.2f);
+                    yield return new WaitForSeconds(0.2f);
                 }
 
-                if (StateController.ActiveCraftingController == null)
-                {
-                    _log.LogWarning("Chef UI closed during interaction. Aborting chain.");
-                    Abort();
-                    yield break;
-                }
-
-                float initTimeout = 1.0f;
-                while (StateController.ActiveCraftingController &&
-                       (StateController.ActiveCraftingController.options == null ||
-                        StateController.ActiveCraftingController.options.Length == 0))
-                {
-                    initTimeout -= Time.fixedDeltaTime;
-                    if (initTimeout <= 0f) break;
-                    yield return new WaitForFixedUpdate();
-                }
-
-                if (StateController.ActiveCraftingController == null)
-                {
-                    _log.LogWarning("Chef UI closed while waiting for options. Aborting.");
-                    Abort();
-                    yield break;
-                }
-
+                // 3. Process the next step
                 if (StateController.ActiveCraftingController != null)
                 {
+                    // PEEK instead of DEQUEUE so the step isn't lost on sync failure
                     ChefRecipe step = craftQueue.Peek();
                     string stepName = GetStepName(step);
                     SetObjectiveText($"Processing {stepName}...");
 
-                    StateController.ActiveCraftingController.ClearAllSlots();
-                    yield return null;
-
+                    // Silence Planner/UI updates during submission
                     StateController.BatchMode = true;
-                    bool submissionAttempted = SubmitIngredients(StateController.ActiveCraftingController, step);
+                    StateController.ActiveCraftingController.ClearAllSlots();
+
+                    // Attempt synchronous submission
+                    bool submitSuccess = SubmitIngredients(StateController.ActiveCraftingController, step);
+
+                    if (submitSuccess)
+                    {
+                        // Hardened wait with a timeout for client/server sync
+                        float syncTimeout = 2.0f;
+                        while (StateController.ActiveCraftingController != null &&
+                               !StateController.ActiveCraftingController.AllSlotsFilled() &&
+                               syncTimeout > 0)
+                        {
+                            syncTimeout -= Time.deltaTime;
+                            yield return null; // Logic frame
+                        }
+
+                        // Verify final state before confirmation
+                        var controller = StateController.ActiveCraftingController;
+                        if (controller != null && controller.AllSlotsFilled())
+                        {
+                            _log.LogInfo($"[Execution] {stepName} verified. Confirming.");
+
+                            // Success: Finally remove it from the queue
+                            craftQueue.Dequeue();
+
+                            lastQty = step.ResultCount;
+                            lastPickup = GetPickupIndex(step);
+
+                            controller.ConfirmSelection();
+                            CraftUI.CloseCraftPanel(controller);
+
+                            StateController.BatchMode = false;
+                            StateController.ForceRebuild();
+
+                            if (craftQueue.Count > 0) yield return new WaitForSeconds(0.1f);
+                            continue;
+                        }
+                    }
+
+                    // If we reach here, submission failed, timed out, or UI closed
+                    _log.LogWarning($"[Execution] {stepName} failed to sync. Retrying step...");
                     StateController.BatchMode = false;
-
-                    if (!submissionAttempted)
-                    {
-                        _log.LogWarning($"[Execution] Local submission failed for {stepName}. Retrying...");
-                        yield return new WaitForSeconds(0.2f);
-                        continue;
-                    }
-
-                    float syncTimeout = 1.5f;
-                    while (StateController.ActiveCraftingController != null &&
-                           !StateController.ActiveCraftingController.AllSlotsFilled() &&
-                           syncTimeout > 0)
-                    {
-                        syncTimeout -= Time.deltaTime;
-                        yield return null;
-                    }
-
-                    var controller = StateController.ActiveCraftingController;
-                    if (controller != null && controller.AllSlotsFilled())
-                    {
-                        _log.LogInfo($"[Execution] {stepName} verified. Confirming.");
-
-                        craftQueue.Dequeue();
-
-                        lastQty = step.ResultCount;
-                        lastPickup = GetPickupIndex(step);
-
-                        controller.ConfirmSelection();
-                        CraftUI.CloseCraftPanel(controller);
-
-                        if (craftQueue.Count > 0) yield return new WaitForSeconds(0.2f);
-                    }
-                    else
-                    {
-                        _log.LogWarning($"[Execution] {stepName} sync timeout. Retrying step...");
-                        yield return new WaitForSeconds(0.3f);
-                    }
+                    yield return new WaitForSeconds(0.2f); // Short retry buffer
                 }
             }
 
