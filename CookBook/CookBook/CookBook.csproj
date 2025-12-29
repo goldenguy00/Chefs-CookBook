@@ -8,6 +8,7 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<Compile Include="ChatNetworkHandler.cs" />
 		<Compile Include="CraftingExecutionHandler.cs" />
 		<Compile Include="CraftingObjectiveTracker.cs" />
 		<Compile Include="CraftPlanner.cs" />

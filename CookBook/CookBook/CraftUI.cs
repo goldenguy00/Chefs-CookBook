@@ -924,13 +924,22 @@ namespace CookBook
 
             if (chain.DroneCostSparse != null)
             {
+                var localUser = LocalUserManager.GetFirstLocalUser()?.currentNetworkUser;
+
                 foreach (var ingredient in chain.DroneCostSparse)
                 {
-                    DroneIndex ownedDroneIdx = InventoryTracker.GetScrapCandidate(ingredient.UnifiedIndex);
-                    if (ownedDroneIdx != DroneIndex.None)
+                    DroneCandidate candidate = InventoryTracker.GetScrapCandidate(ingredient.UnifiedIndex);
+
+                    if (candidate.DroneIdx != DroneIndex.None)
                     {
-                        Sprite droneSprite = GetDroneIcon(ownedDroneIdx);
-                        if (droneSprite != null) InstantiateSlot(_droneSlotTemplate, runtime.VisualRect, droneSprite, ingredient.Count);
+                        Sprite droneSprite = GetDroneIcon(candidate.DroneIdx);
+                        if (droneSprite != null)
+                        {
+                            bool isAlliedDrone = candidate.Owner != null && candidate.Owner != localUser;
+                            GameObject template = isAlliedDrone ? _tradeSlotTemplate : _droneSlotTemplate;
+
+                            InstantiateSlot(template, runtime.VisualRect, droneSprite, ingredient.Count);
+                        }
                     }
                 }
             }

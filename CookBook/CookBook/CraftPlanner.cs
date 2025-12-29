@@ -316,26 +316,24 @@ namespace CookBook
             _tempPhysList.Clear();
             _tempDroneList.Clear();
 
-            // Tally all steps in the current chain path
             if (old != null) foreach (var step in old.Steps) TallyStep(step);
             TallyStep(next);
 
-            // Exclude the final result from being consumed as an ingredient
             _productionBuffer[next.ResultIndex] -= next.ResultCount;
 
-            // Calculate Allied Trade Requirements
             var trades = (old != null ? old.Steps.Concat(new[] { next }) : new[] { next })
                 .OfType<TradeRecipe>()
-                .GroupBy(t => new { t.Donor, t.ResultIndex })
+                .GroupBy(t => new { t.Donor, t.ItemUnifiedIndex })
                 .Select(g => new TradeRequirement
                 {
                     Donor = g.Key.Donor,
-                    UnifiedIndex = g.Key.ResultIndex,
+                    UnifiedIndex = g.Key.ItemUnifiedIndex,
                     Count = g.Count()
                 })
                 .ToArray();
 
-            // Calculate Local Costs
+            var localUser = LocalUserManager.GetFirstLocalUser()?.currentNetworkUser;
+
             foreach (int idx in _dirtyIndices)
             {
                 int net = _needsBuffer[idx] - _productionBuffer[idx];
@@ -343,16 +341,25 @@ namespace CookBook
 
                 int physOwned = InventoryTracker.GetPhysicalCount(idx);
                 int payWithPhysical = Math.Min(physOwned, net);
-                int payWithDrone = net - payWithPhysical;
+                int deficit = net - payWithPhysical;
 
-                if (payWithDrone > 0 && InventoryTracker.GetDronePotentialCount(idx) == 0)
-                    return (null, null, null);
+                int globalDronePotential = InventoryTracker.GetGlobalDronePotentialCount(idx);
+                if (deficit > globalDronePotential) return (null, null, null);
 
                 if (payWithPhysical > 0) _tempPhysList.Add(new Ingredient(idx, payWithPhysical));
-                if (payWithDrone > 0) _tempDroneList.Add(new Ingredient(idx, payWithDrone));
+                if (deficit > 0) _tempDroneList.Add(new Ingredient(idx, deficit));
             }
 
-            return (_tempPhysList.ToArray(), _tempDroneList.ToArray(), trades);
+            Ingredient[] sortedDrones = _tempDroneList
+                .OrderBy(d =>
+                {
+                    var candidate = InventoryTracker.GetScrapCandidate(d.UnifiedIndex);
+                    bool isLocal = (candidate.Owner == null || candidate.Owner == localUser);
+                    return isLocal ? 1 : 0;
+                })
+                .ToArray();
+
+            return (_tempPhysList.ToArray(), sortedDrones, trades);
         }
 
 

@@ -69,18 +69,34 @@ namespace CookBook
             }
         }
 
-
         private static IEnumerator CraftChainRoutine(CraftPlanner.RecipeChain chain)
         {
             var body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
             if (!body) { Abort(); yield break; }
 
+            _log.LogInfo("================= PHASE 1: ACQUISITION =================");
             if (chain.DroneCostSparse != null && chain.DroneCostSparse.Length > 0)
             {
                 foreach (var req in chain.DroneCostSparse)
                 {
                     PickupIndex pi = GetPickupIndexFromUnified(req.UnifiedIndex);
-                    yield return HandleAcquisition(pi, req.Count, $"Scrap {GetDroneName(req.UnifiedIndex)}");
+
+                    DroneCandidate candidate = InventoryTracker.GetScrapCandidate(req.UnifiedIndex);
+                    string droneName = GetDroneName(req.UnifiedIndex);
+
+                    bool isLocal = (candidate.Owner == null || candidate.Owner == LocalUserManager.GetFirstLocalUser()?.currentNetworkUser);
+
+                    if (isLocal)
+                    {
+                        yield return HandleAcquisition(pi, req.Count, $"Scrap your {droneName}");
+                    }
+                    else
+                    {
+                        ChatNetworkHandler.SendObjectiveRequest(candidate.Owner, "SCRAP", req.UnifiedIndex, req.Count);
+
+                        string teammateName = candidate.Owner?.userName ?? "Teammate";
+                        yield return HandleAcquisition(pi, req.Count, $"Wait for {teammateName} to scrap {droneName}");
+                    }
                 }
             }
 
@@ -89,8 +105,10 @@ namespace CookBook
                 foreach (var req in chain.AlliedTradeSparse)
                 {
                     PickupIndex pi = GetPickupIndexFromUnified(req.UnifiedIndex);
-                    string donorName = req.Donor?.userName ?? "Ally";
 
+                    ChatNetworkHandler.SendObjectiveRequest(req.Donor, "TRADE", req.UnifiedIndex, req.Count);
+
+                    string donorName = req.Donor?.userName ?? "Ally";
                     yield return HandleAcquisition(pi, req.Count, $"Wait for {donorName} to trade");
                 }
             }
@@ -269,12 +287,15 @@ namespace CookBook
 
         private static string GetDroneName(int unifiedIndex)
         {
-            DroneIndex bestCandidate = InventoryTracker.GetScrapCandidate(unifiedIndex);
-            if (bestCandidate != DroneIndex.None)
+            DroneCandidate candidate = InventoryTracker.GetScrapCandidate(unifiedIndex);
+
+            if (candidate.DroneIdx != DroneIndex.None)
             {
-                var prefab = DroneCatalog.GetDroneDef(bestCandidate)?.bodyPrefab;
+                var prefab = DroneCatalog.GetDroneDef(candidate.DroneIdx)?.bodyPrefab;
                 if (prefab && prefab.GetComponent<CharacterBody>() is CharacterBody b)
+                {
                     return Language.GetString(b.baseNameToken);
+                }
             }
             return "Drone";
         }

@@ -40,6 +40,8 @@ namespace CookBook
             _activeObjectives.Clear();
         }
 
+        internal static bool HasActiveObjectives() => _activeObjectives.Count > 0;
+
         internal static ObjectiveToken CreateObjective(string message)
         {
             var token = ScriptableObject.CreateInstance<ObjectiveToken>();
@@ -73,6 +75,58 @@ namespace CookBook
                     objectiveType = typeof(ChefObjectiveTracker)
                 });
             }
+        }
+
+        /// <summary>
+        /// Called by StateController when a hidden chat packet is received.
+        /// </summary>
+        internal static void AddAlliedRequest(NetworkUser sender, string command, int unifiedIdx, int quantity)
+        {
+            string senderName = sender ? sender.userName : "Chef";
+            string itemName = GetItemName(unifiedIdx);
+            string message = string.Empty;
+
+            if (command == "TRADE")
+            {
+                message = $"<style=cIsUtility>{senderName} needs:</style> {quantity}x {itemName}";
+            }
+            else if (command == "SCRAP")
+            {
+                message = $"<style=cIsUtility>{senderName} needs:</style> {itemName} <style=cStack>(Scrap a Drone)</style>";
+            }
+
+            if (!string.IsNullOrEmpty(message))
+            {
+                CreateObjective(message);
+            }
+        }
+
+        private static string GetItemName(int unifiedIdx)
+        {
+            int itemLen = ItemCatalog.itemCount;
+            if (unifiedIdx < itemLen)
+            {
+                var def = ItemCatalog.GetItemDef((ItemIndex)unifiedIdx);
+                return def ? Language.GetString(def.nameToken) : "Unknown Item";
+            }
+            else
+            {
+                var def = EquipmentCatalog.GetEquipmentDef((EquipmentIndex)(unifiedIdx - itemLen));
+                return def ? Language.GetString(def.nameToken) : "Unknown Equipment";
+            }
+        }
+
+        /// <summary>
+        /// Specific cleanup for just the objectives, usually called on Abort.
+        /// </summary>
+        internal static void ClearAllObjectives()
+        {
+            for (int i = _activeObjectives.Count - 1; i >= 0; i--)
+            {
+                var token = _activeObjectives[i];
+                if (token) Object.Destroy(token);
+            }
+            _activeObjectives.Clear();
         }
 
         private class ChefObjectiveTracker : ObjectivePanelController.ObjectiveTracker
