@@ -22,6 +22,7 @@ namespace CookBook
         private static int[] _cachedGlobalDronePotential;
         private static bool _dronesDirty = true;
         private static bool _itemsDirty = true;
+        private static bool _remoteDirty = true;
         private static bool _hasSnapshot = false;
 
         internal static void MarkDronesDirty() => _dronesDirty = true;
@@ -112,14 +113,23 @@ namespace CookBook
         //--------------------------------------- Event Logic ----------------------------------------
         private static void OnGlobalInventoryChanged(Inventory inv)
         {
-            if (CookBook.AllowMultiplayerPooling.Value || inv == _localInventory)
+            if (!_enabled) return;
+
+            if (inv == _localInventory)
             {
+                _itemsDirty = true;
+                UpdateSnapshot();
+            }
+            else if (CookBook.AllowMultiplayerPooling.Value)
+            {
+                _remoteDirty = true;
                 UpdateSnapshot();
             }
         }
         private static void OnLocalInventoryChanged()
         {
             if (!_enabled || _localInventory == null) return;
+            _itemsDirty = true;
             UpdateSnapshot();
         }
 
@@ -145,8 +155,8 @@ namespace CookBook
 
                         if (droneDef != null && droneDef.canScrap)
                         {
-                            _log.LogDebug($"[DroneUpdate] {droneDef.droneIndex} (Tier {droneDef.tier}) changed. Rebuilding Planner.");
-                            OnLocalInventoryChanged();
+                            _dronesDirty = true;
+                            UpdateSnapshot();
                         }
                     }
                 }
@@ -160,7 +170,7 @@ namespace CookBook
         {
             if (!_enabled || _localInventory == null) return;
 
-            if (!_itemsDirty && !_dronesDirty && _hasSnapshot) return;
+            if (!_itemsDirty && !_dronesDirty && !_remoteDirty && _hasSnapshot) return;
 
             int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
 
@@ -189,6 +199,8 @@ namespace CookBook
                 }
                 _dronesDirty = false;
             }
+
+            _remoteDirty = false;
 
             int[] combinedTotal = new int[totalLen];
             for (int i = 0; i < totalLen; i++) combinedTotal[i] = _cachedLocalPhysical[i] + _cachedGlobalDronePotential[i];
