@@ -72,11 +72,11 @@ namespace CookBook
             }
         }
 
-        public void ComputeCraftable(int[] unifiedStacks, HashSet<int> changedIndices = null)
+        public void ComputeCraftable(int[] unifiedStacks, HashSet<int> changedIndices = null, bool forceUpdate = false)
         {
             if (!StateController.IsChefStage() || unifiedStacks == null) return;
 
-            if (changedIndices != null && changedIndices.Count > 0 && _entryCache.Count > 0)
+            if (!forceUpdate && changedIndices != null && changedIndices.Count > 0 && _entryCache.Count > 0)
             {
                 bool impacted = false;
                 foreach (var idx in changedIndices)
@@ -87,7 +87,14 @@ namespace CookBook
                         break;
                     }
                 }
-                if (!impacted) return;
+
+                if (!impacted)
+                {
+                    var cachedResult = _entryCache.Values.ToList();
+                    cachedResult.Sort(TierManager.CompareCraftableEntries);
+                    OnCraftablesUpdated?.Invoke(cachedResult);
+                    return;
+                }
             }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -140,7 +147,6 @@ namespace CookBook
                 }
             }
 
-            // 5. Finalize Results and Update Cache
             _entryCache = discovered.Select(kvp =>
             {
                 var validChains = kvp.Value
@@ -164,7 +170,7 @@ namespace CookBook
             finalResult.Sort(TierManager.CompareCraftableEntries);
 
             sw.Stop();
-            _log.LogDebug($"[Planner] Delta Rebuild: {sw.ElapsedMilliseconds}ms for {finalResult.Count} entries.");
+            _log.LogDebug($"[Planner] Rebuild complete: {sw.ElapsedMilliseconds}ms for {finalResult.Count} entries.");
             OnCraftablesUpdated?.Invoke(finalResult);
         }
 

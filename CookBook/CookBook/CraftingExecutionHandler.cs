@@ -214,6 +214,8 @@ namespace CookBook
         /// </summary>
         private static IEnumerator SubmitIngredientsCoroutine(CraftingController controller, ChefRecipe recipe)
         {
+            StateController.BatchMode = true;
+
             foreach (var ing in recipe.Ingredients)
             {
                 PickupIndex target = ing.IsItem
@@ -226,6 +228,10 @@ namespace CookBook
                     yield return new WaitForFixedUpdate();
                 }
             }
+
+            StateController.BatchMode = false;
+
+            StateController.ForceRebuild();
         }
 
         private static IEnumerator HandleAcquisition(PickupIndex pi, int totalNeeded, string actionPrefix)

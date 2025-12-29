@@ -1,14 +1,8 @@
 ﻿using BepInEx.Logging;
 using RoR2;
-using RoR2.UI;
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
-using System.Net.NetworkInformation;
-using System.Reflection;
 using UnityEngine;
-using static CookBook.CraftPlanner;
 
 namespace CookBook
 {
@@ -30,6 +24,7 @@ namespace CookBook
         internal static CraftingController ActiveCraftingController { get; private set; }
         internal static GameObject TargetCraftingObject { get; private set; }
         internal static bool IsAutoCrafting => CraftingExecutionHandler.IsAutoCrafting;
+        public static bool BatchMode { get; set; } = false;
 
         // Events
         internal static event Action<IReadOnlyList<CraftPlanner.CraftableEntry>> OnCraftablesForUIChanged;
@@ -143,7 +138,11 @@ namespace CookBook
             SetPlanner(planner);
         }
 
-        private static void OnInventoryChanged(int[] unifiedStacks) => QueueThrottledCompute(unifiedStacks);
+        private static void OnInventoryChanged(int[] unifiedStacks)
+        {
+            if (BatchMode) return;
+            QueueThrottledCompute(unifiedStacks);
+        }
 
         private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables)
         {
@@ -261,6 +260,14 @@ namespace CookBook
         }
 
         //--------------------------------------- Helpers ----------------------------------------
+        internal static void ForceRebuild()
+        {
+            if (_planner != null && IsChefStage())
+            {
+                _planner.ComputeCraftable(InventoryTracker.GetUnifiedStacksCopy(), null, true);
+            }
+        }
+
         /// <summary>
         /// Set the planner for a given StateController.
         /// </summary>

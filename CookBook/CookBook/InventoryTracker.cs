@@ -184,7 +184,6 @@ namespace CookBook
                     {
                         var netUser = playerController.networkUser;
                         if (!netUser || netUser.localUser == GetLocalUser()) continue;
-
                         AccumulateGlobalDrones(netUser, _cachedGlobalDronePotential);
                     }
                 }
@@ -192,10 +191,7 @@ namespace CookBook
             }
 
             int[] combinedTotal = new int[totalLen];
-            for (int i = 0; i < totalLen; i++)
-            {
-                combinedTotal[i] = _cachedLocalPhysical[i] + _cachedGlobalDronePotential[i];
-            }
+            for (int i = 0; i < totalLen; i++) combinedTotal[i] = _cachedLocalPhysical[i] + _cachedGlobalDronePotential[i];
 
             _snapshot = new InventorySnapshot(
                 (int[])_cachedLocalPhysical.Clone(),
