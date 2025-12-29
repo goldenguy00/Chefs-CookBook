@@ -184,30 +184,56 @@ namespace CookBook
                     yield break;
                 }
 
-                ChefRecipe step = craftQueue.Dequeue();
-                string stepName = GetStepName(step);
-                SetObjectiveText($"Processing {stepName}...");
-
-                StateController.ActiveCraftingController.ClearAllSlots();
-                if (!SubmitIngredients(StateController.ActiveCraftingController, step))
+                if (StateController.ActiveCraftingController != null)
                 {
-                    _log.LogWarning($"Missing ingredients for {stepName}. Aborting.");
-                    Abort();
-                    yield break;
+                    ChefRecipe step = craftQueue.Peek();
+                    string stepName = GetStepName(step);
+                    SetObjectiveText($"Processing {stepName}...");
+
+                    StateController.ActiveCraftingController.ClearAllSlots();
+                    yield return null;
+
+                    StateController.BatchMode = true;
+                    bool submissionAttempted = SubmitIngredients(StateController.ActiveCraftingController, step);
+                    StateController.BatchMode = false;
+
+                    if (!submissionAttempted)
+                    {
+                        _log.LogWarning($"[Execution] Local submission failed for {stepName}. Retrying...");
+                        yield return new WaitForSeconds(0.2f);
+                        continue;
+                    }
+
+                    float syncTimeout = 1.5f;
+                    while (StateController.ActiveCraftingController != null &&
+                           !StateController.ActiveCraftingController.AllSlotsFilled() &&
+                           syncTimeout > 0)
+                    {
+                        syncTimeout -= Time.deltaTime;
+                        yield return null;
+                    }
+
+                    var controller = StateController.ActiveCraftingController;
+                    if (controller != null && controller.AllSlotsFilled())
+                    {
+                        _log.LogInfo($"[Execution] {stepName} verified. Confirming.");
+
+                        craftQueue.Dequeue();
+
+                        lastQty = step.ResultCount;
+                        lastPickup = GetPickupIndex(step);
+
+                        controller.ConfirmSelection();
+                        CraftUI.CloseCraftPanel(controller);
+
+                        if (craftQueue.Count > 0) yield return new WaitForSeconds(0.2f);
+                    }
+                    else
+                    {
+                        _log.LogWarning($"[Execution] {stepName} sync timeout. Retrying step...");
+                        yield return new WaitForSeconds(0.3f);
+                    }
                 }
-
-                while (!StateController.ActiveCraftingController.AllSlotsFilled())
-                {
-                    yield return new WaitForFixedUpdate();
-                }
-
-                StateController.ActiveCraftingController.ConfirmSelection();
-                CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
-
-                lastQty = step.ResultCount;
-                lastPickup = GetPickupIndex(step);
-
-                if (craftQueue.Count > 0) yield return new WaitForSeconds(0.2f);
             }
 
             _log.LogInfo("[ExecutionHandler] Chain Complete.");
