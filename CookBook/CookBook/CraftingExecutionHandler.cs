@@ -161,6 +161,13 @@ namespace CookBook
                     if (StateController.ActiveCraftingController == null) yield return new WaitForSeconds(0.2f);
                 }
 
+                if (StateController.ActiveCraftingController == null)
+                {
+                    _log.LogWarning("Chef UI closed during interaction. Aborting chain.");
+                    Abort();
+                    yield break;
+                }
+
                 float initTimeout = 1.0f;
                 while (StateController.ActiveCraftingController &&
                        (StateController.ActiveCraftingController.options == null ||
@@ -169,6 +176,13 @@ namespace CookBook
                     initTimeout -= Time.fixedDeltaTime;
                     if (initTimeout <= 0f) break;
                     yield return new WaitForFixedUpdate();
+                }
+
+                if (StateController.ActiveCraftingController == null)
+                {
+                    _log.LogWarning("Chef UI closed while waiting for options. Aborting.");
+                    Abort();
+                    yield break;
                 }
 
                 ChefRecipe step = craftQueue.Dequeue();
