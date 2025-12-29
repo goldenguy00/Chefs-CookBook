@@ -254,9 +254,11 @@ namespace CookBook
 
         private static string GetStepName(ChefRecipe step)
         {
-            if (step.ResultIndex < ItemCatalog.itemCount)
-                return Language.GetString(ItemCatalog.GetItemDef((ItemIndex)step.ResultIndex)?.nameToken);
-            return Language.GetString(EquipmentCatalog.GetEquipmentDef((EquipmentIndex)(step.ResultIndex - ItemCatalog.itemCount))?.nameToken);
+            string baseName = (step.ResultIndex < ItemCatalog.itemCount)
+                ? Language.GetString(ItemCatalog.GetItemDef((ItemIndex)step.ResultIndex)?.nameToken)
+                : Language.GetString(EquipmentCatalog.GetEquipmentDef((EquipmentIndex)(step.ResultIndex - ItemCatalog.itemCount))?.nameToken);
+            if (step is TradeRecipe) return $"<style=cIsUtility>Trade: {baseName}</style>";
+            return baseName;
         }
 
         private static PickupIndex GetPickupIndex(ChefRecipe step)

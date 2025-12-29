@@ -27,6 +27,8 @@ namespace CookBook
         private static GameObject _recipeRowTemplate;
         private static GameObject _pathRowTemplate;
         private static GameObject _ingredientSlotTemplate;
+        private static GameObject _droneSlotTemplate;
+        private static GameObject _tradeSlotTemplate;
         private static GameObject _ResultSlotTemplate;
 
         private static RecipeRowRuntime _openRow;
@@ -907,7 +909,16 @@ namespace CookBook
                 foreach (var ingredient in chain.PhysicalCostSparse)
                 {
                     Sprite icon = GetIcon(ingredient.UnifiedIndex);
-                    if (icon != null) CreateIngredientSlot(runtime.VisualRect, icon, ingredient.Count);
+                    if (icon != null) InstantiateSlot(_ingredientSlotTemplate, runtime.VisualRect, icon, ingredient.Count);
+                }
+            }
+
+            if (chain.AlliedTradeSparse != null)
+            {
+                foreach (var trade in chain.AlliedTradeSparse)
+                {
+                    Sprite icon = GetIcon(trade.UnifiedIndex);
+                    if (icon != null) InstantiateSlot(_tradeSlotTemplate, runtime.VisualRect, icon, trade.Count);
                 }
             }
 
@@ -916,45 +927,30 @@ namespace CookBook
                 foreach (var ingredient in chain.DroneCostSparse)
                 {
                     DroneIndex ownedDroneIdx = InventoryTracker.GetScrapCandidate(ingredient.UnifiedIndex);
-
                     if (ownedDroneIdx != DroneIndex.None)
                     {
                         Sprite droneSprite = GetDroneIcon(ownedDroneIdx);
-                        if (droneSprite != null)
-                        {
-                            CreateIngredientSlot(runtime.VisualRect, droneSprite, ingredient.Count);
-                        }
+                        if (droneSprite != null) InstantiateSlot(_droneSlotTemplate, runtime.VisualRect, droneSprite, ingredient.Count);
                     }
                 }
             }
             return pathRowGO;
         }
 
-        private static void CreateIngredientSlot(Transform parentRow, Sprite icon, int count)
+        private static void InstantiateSlot(GameObject template, Transform parentrow, Sprite icon, int count)
         {
-            if (_ingredientSlotTemplate == null) return;
-
-            GameObject slotGO = UnityEngine.Object.Instantiate(_ingredientSlotTemplate, parentRow);
-            slotGO.name = "IngredientSlot";
+            if (template == null) return;
+            GameObject slotGO = UnityEngine.Object.Instantiate(template, parentrow);
             slotGO.SetActive(true);
 
-            var iconImg = slotGO.transform.Find("Background/Icon")?.GetComponent<Image>();
-            if (iconImg != null)
-            {
-                iconImg.sprite = icon;
-                iconImg.raycastTarget = false;
-                iconImg.color = Color.white;
-            }
+            var iconImg = slotGO.transform.Find("Icon")?.GetComponent<Image>();
+            if (iconImg) iconImg.sprite = icon;
 
-            var stackTmp = slotGO.transform.Find("Background/StackText")?.GetComponent<TextMeshProUGUI>();
-            if (stackTmp != null)
+            var stackTmp = slotGO.transform.Find("StackText")?.GetComponent<TextMeshProUGUI>();
+            if (stackTmp)
             {
-                if (count > 1)
-                {
-                    stackTmp.gameObject.SetActive(true);
-                    stackTmp.text = count.ToString();
-                }
-                else stackTmp.gameObject.SetActive(false);
+                stackTmp.text = count > 1 ? count.ToString() : string.Empty;
+                stackTmp.gameObject.SetActive(count > 1);
             }
         }
 
@@ -1469,6 +1465,15 @@ namespace CookBook
         {
             if (_ingredientSlotTemplate != null) return;
 
+            _ingredientSlotTemplate = BuildIngredientTemplate("PhysicalSlot", new Color32(16, 8, 10, 255));
+
+            _droneSlotTemplate = BuildIngredientTemplate("DroneSlot", new Color32(20, 50, 45, 255));
+
+            _tradeSlotTemplate = BuildIngredientTemplate("TradeSlot", new Color32(75, 65, 25, 255));
+        }
+
+        private static GameObject BuildIngredientTemplate(string name, Color32 bgColor)
+        {
             float IngredientHeightPx = RoundToEven(IngredientHeightNorm * _panelHeight);
             float iconInsetPx = RoundToEven(IngredientHeightNorm * _panelHeight * 0.1f);
             var slotGO = CreateUIObject("IngredientSlotTemplate", typeof(RectTransform), typeof(LayoutElement));
@@ -1502,14 +1507,14 @@ namespace CookBook
             bgRT.offsetMin = Vector2.zero;
             bgRT.offsetMax = Vector2.zero;
 
-            bgImg.color = new Color32(16, 8, 10, 255);
+            bgImg.color = bgColor;
             bgImg.raycastTarget = false;
 
             var iconGO = CreateUIObject("Icon", typeof(RectTransform), typeof(Image));
             var iconRT = (RectTransform)iconGO.transform;
             var iconImg = iconGO.GetComponent<Image>();
 
-            iconRT.SetParent(bgRT, false);
+            iconRT.SetParent(slotRT, false);
             iconRT.anchorMin = Vector2.zero;
             iconRT.anchorMax = Vector2.one;
             iconRT.pivot = new Vector2(0.5f, 0.5f);
@@ -1517,17 +1522,16 @@ namespace CookBook
             iconRT.offsetMax = new Vector2(-iconInsetPx, -iconInsetPx);
 
             iconImg.sprite = null;
-            iconImg.color = new Color(1f, 1f, 1f, 0.1f);
+            iconImg.color = Color.white;
             iconImg.preserveAspect = true;
             iconImg.raycastTarget = false;
 
             var stackGO = CreateUIObject("StackText", typeof(RectTransform), typeof(TextMeshProUGUI), typeof(LayoutElement));
-
             var stackRT = (RectTransform)stackGO.transform;
             var stackTMP = stackGO.GetComponent<TextMeshProUGUI>();
             var stackLE = stackGO.GetComponent<LayoutElement>();
 
-            stackRT.SetParent(bgRT, false);
+            stackRT.SetParent(slotRT, false);
 
             stackRT.anchorMin = new Vector2(1f, 1f);
             stackRT.anchorMax = new Vector2(1f, 1f);
@@ -1542,12 +1546,11 @@ namespace CookBook
             stackTMP.raycastTarget = false;
 
             stackLE.ignoreLayout = true;
-
             stackGO.transform.SetAsLastSibling();
             stackGO.SetActive(false);
 
             AddBorder(bgRT, new Color32(209, 209, 210, 200), 1f, 1f, 1f, 1f);
-            _ingredientSlotTemplate = slotGO;
+            return slotGO;
         }
 
         //==================== Helpers ====================
@@ -1627,9 +1630,6 @@ namespace CookBook
 
         public static GameObject AddBorder(RectTransform parent, Color32 color, float top = 0f, float bottom = 0f, float left = 0f, float right = 0f)
         {
-            // --- THE FIX ---
-            // Convert logical "1.0" values into "Pixel Perfect" values.
-            // If you pass 1f, and scale is 1.5, this becomes 0.666f units (which equals exactly 1 screen pixel).
             if (top > 0) top = GetPixelCorrectThickness(top);
             if (bottom > 0) bottom = GetPixelCorrectThickness(bottom);
             if (left > 0) left = GetPixelCorrectThickness(left);
@@ -1639,11 +1639,9 @@ namespace CookBook
             var containerGO = CreateUIObject("BorderGroup_Solid", typeof(RectTransform), typeof(LayoutElement));
             var containerRT = containerGO.GetComponent<RectTransform>();
 
-            // Ignore layout to prevent disrupting parent grids
             var le = containerGO.GetComponent<LayoutElement>();
             le.ignoreLayout = true;
 
-            // Fill Parent Exactly
             containerRT.SetParent(parent, false);
             containerRT.anchorMin = Vector2.zero;
             containerRT.anchorMax = Vector2.one;

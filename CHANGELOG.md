@@ -1,6 +1,11 @@
 # Changelog
-
 Dates are listed in `MM/DD/YY` format.
+
+---
+
+## v1.2.3 — 12/28/25
+### Changed
+- Added tint for ingredient sources to differentiate self sourced items from traded items. Cleaned up ingredient icon templating to eliminate runtime costs, just instantiation now.
 
 ---
 
