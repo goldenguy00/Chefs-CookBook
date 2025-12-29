@@ -189,7 +189,12 @@ namespace CookBook
                 SetObjectiveText($"Processing {stepName}...");
 
                 StateController.ActiveCraftingController.ClearAllSlots();
-                yield return SubmitIngredientsCoroutine(StateController.ActiveCraftingController, step);
+                if (!SubmitIngredients(StateController.ActiveCraftingController, step))
+                {
+                    _log.LogWarning($"Missing ingredients for {stepName}. Aborting.");
+                    Abort();
+                    yield break;
+                }
 
                 while (!StateController.ActiveCraftingController.AllSlotsFilled())
                 {
@@ -202,36 +207,11 @@ namespace CookBook
                 lastQty = step.ResultCount;
                 lastPickup = GetPickupIndex(step);
 
-                if (craftQueue.Count > 0) yield return new WaitForSeconds(0.1f);
+                if (craftQueue.Count > 0) yield return new WaitForSeconds(0.2f);
             }
 
             _log.LogInfo("[ExecutionHandler] Chain Complete.");
             Abort();
-        }
-
-        /// <summary>
-        /// Submits items one-by-one with a frame gap to avoid main-thread stutter.
-        /// </summary>
-        private static IEnumerator SubmitIngredientsCoroutine(CraftingController controller, ChefRecipe recipe)
-        {
-            StateController.BatchMode = true;
-
-            foreach (var ing in recipe.Ingredients)
-            {
-                PickupIndex target = ing.IsItem
-                    ? PickupCatalog.FindPickupIndex(ing.ItemIndex)
-                    : PickupCatalog.FindPickupIndex(ing.EquipIndex);
-
-                if (target != PickupIndex.none)
-                {
-                    controller.SendToSlot(target.value);
-                    yield return new WaitForFixedUpdate();
-                }
-            }
-
-            StateController.BatchMode = false;
-
-            StateController.ForceRebuild();
         }
 
         private static IEnumerator HandleAcquisition(PickupIndex pi, int totalNeeded, string actionPrefix)
@@ -291,7 +271,11 @@ namespace CookBook
                     _log.LogWarning($"[CookBook] Missing ingredient: {target}");
                     return false;
                 }
-                controller.SendToSlot(target.value);
+
+                for (int i = 0; i < ing.Count; i++)
+                {
+                    controller.SendToSlot(target.value);
+                }
             }
             return true;
         }
