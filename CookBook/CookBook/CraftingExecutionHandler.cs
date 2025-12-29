@@ -41,11 +41,10 @@ namespace CookBook
                 _currentObjective = null;
             }
 
-            CraftingObjectiveTracker.Cleanup();
-            CraftingObjectiveTracker.Init();
+            if (StateController.ActiveCraftingController)
+                CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
 
-            if (StateController.ActiveCraftingController) CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
-            _log.LogInfo("[ExecutionHandler] Craft aborted.");
+            _log.LogInfo("[ExecutionHandler] Local craft aborted.");
         }
 
         private static void SetObjectiveText(string text)
@@ -80,7 +79,6 @@ namespace CookBook
                 foreach (var req in chain.DroneCostSparse)
                 {
                     PickupIndex pi = GetPickupIndexFromUnified(req.UnifiedIndex);
-
                     DroneCandidate candidate = InventoryTracker.GetScrapCandidate(req.UnifiedIndex);
                     string droneName = GetDroneName(req.UnifiedIndex);
 
@@ -96,6 +94,8 @@ namespace CookBook
 
                         string teammateName = candidate.Owner?.userName ?? "Teammate";
                         yield return HandleAcquisition(pi, req.Count, $"Wait for {teammateName} to scrap {droneName}");
+
+                        ChatNetworkHandler.SendObjectiveSuccess(candidate.Owner, req.UnifiedIndex);
                     }
                 }
             }
@@ -110,6 +110,8 @@ namespace CookBook
 
                     string donorName = req.Donor?.userName ?? "Ally";
                     yield return HandleAcquisition(pi, req.Count, $"Wait for {donorName} to trade");
+
+                    ChatNetworkHandler.SendObjectiveSuccess(req.Donor, req.UnifiedIndex);
                 }
             }
 
