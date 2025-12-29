@@ -73,7 +73,6 @@ namespace CookBook
             var body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
             if (!body) { Abort(); yield break; }
 
-            _log.LogInfo("================= PHASE 1: ACQUISITION =================");
             if (chain.DroneCostSparse != null && chain.DroneCostSparse.Length > 0)
             {
                 foreach (var req in chain.DroneCostSparse)
@@ -114,8 +113,6 @@ namespace CookBook
                     ChatNetworkHandler.SendObjectiveSuccess(req.Donor, req.UnifiedIndex);
                 }
             }
-
-            _log.LogInfo("================= PHASE 2: ASSEMBLY =================");
 
             Queue<ChefRecipe> craftQueue = new Queue<ChefRecipe>(chain.Steps.Where(s => !(s is TradeRecipe)));
             PickupIndex lastPickup = PickupIndex.none;
