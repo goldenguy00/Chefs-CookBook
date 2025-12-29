@@ -374,10 +374,30 @@ namespace CookBook
                 int deficit = net - payWithPhysical;
 
                 int globalDronePotential = InventoryTracker.GetGlobalDronePotentialCount(idx);
-                if (deficit > globalDronePotential) return (null, null, null);
+                if (deficit > 0)
+                {
+                    int totalPotential = InventoryTracker.GetGlobalDronePotentialCount(idx);
+                    int alreadyUsedByChain = 0;
+
+                    if (old != null)
+                    {
+                        foreach (var spentDrone in old.DroneCostSparse)
+                        {
+                            if (spentDrone.UnifiedIndex == idx)
+                            {
+                                alreadyUsedByChain += spentDrone.Count;
+                            }
+                        }
+                    }
+
+                    int availablePotential = totalPotential - alreadyUsedByChain;
+
+                    if (deficit > availablePotential) return (null, null, null);
+
+                    _tempDroneList.Add(new Ingredient(idx, deficit));
+                }
 
                 if (payWithPhysical > 0) _tempPhysList.Add(new Ingredient(idx, payWithPhysical));
-                if (deficit > 0) _tempDroneList.Add(new Ingredient(idx, deficit));
             }
 
             Ingredient[] sortedDrones = _tempDroneList
