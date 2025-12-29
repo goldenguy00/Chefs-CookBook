@@ -24,6 +24,7 @@ namespace CookBook
         private static bool _itemsDirty = true;
         private static bool _remoteDirty = true;
         private static bool _hasSnapshot = false;
+        private static readonly HashSet<int> _changedIndices = new();
 
         internal static void MarkDronesDirty() => _dronesDirty = true;
         internal static void MarkItemsDirty() => _itemsDirty = true;
@@ -34,7 +35,7 @@ namespace CookBook
         /// <summary>
         /// Fires when the combined (Physical + Drone) inventory changes.
         /// </summary>
-        internal static event Action<int[]> OnInventoryChanged;
+        internal static event Action<int[], HashSet<int>> OnInventoryChangedWithIndices;
 
         private static readonly Dictionary<ItemTier, ItemIndex> _tierToScrapItemIdx = new();
         private static readonly Dictionary<int, DroneCandidate> _globalScrapCandidates = new();
@@ -174,9 +175,25 @@ namespace CookBook
 
             int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
 
+            _changedIndices.Clear();
+
             if (_itemsDirty || _cachedLocalPhysical == null)
             {
-                _cachedLocalPhysical = GetUnifiedStacksFor(_localInventory);
+                int[] newPhysical = GetUnifiedStacksFor(_localInventory);
+
+                if (_cachedLocalPhysical != null)
+                {
+                    for (int i = 0; i < totalLen; i++)
+                    {
+                        if (newPhysical[i] != _cachedLocalPhysical[i]) _changedIndices.Add(i);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < totalLen; i++) _changedIndices.Add(i);
+                }
+
+                _cachedLocalPhysical = newPhysical;
                 _itemsDirty = false;
             }
 
@@ -213,7 +230,7 @@ namespace CookBook
             );
 
             _hasSnapshot = true;
-            OnInventoryChanged?.Invoke((int[])combinedTotal.Clone());
+            OnInventoryChangedWithIndices?.Invoke((int[])combinedTotal.Clone(), new HashSet<int>(_changedIndices));
         }
 
         private static void AccumulateGlobalDrones(NetworkUser user, int[] globalPotentialBuffer)

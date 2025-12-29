@@ -1,4 +1,5 @@
-﻿using BepInEx.Logging;
+﻿using BepInEx;
+using BepInEx.Logging;
 using RoR2;
 using System;
 using System.Collections;
@@ -68,7 +69,7 @@ namespace CookBook
             DialogueHooks.Shutdown();
 
             InventoryTracker.Disable();
-            InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
+            InventoryTracker.OnInventoryChangedWithIndices -= OnInventoryChanged;
             _subscribedInventoryHandler = false;
 
             ChatNetworkHandler.OnIncomingObjective -= OnNetworkObjectiveReceived;
@@ -124,7 +125,7 @@ namespace CookBook
             ChatNetworkHandler.Disable();
 
             InventoryTracker.Disable();
-            InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
+            InventoryTracker.OnInventoryChangedWithIndices -= OnInventoryChanged;
         }
 
         // -------------------- CookBook Handshake Events --------------------
@@ -139,10 +140,11 @@ namespace CookBook
             SetPlanner(planner);
         }
 
-        private static void OnInventoryChanged(int[] unifiedStacks)
+        private static void OnInventoryChanged(int[] unifiedStacks, HashSet<int> changedIndices)
         {
             if (BatchMode) return;
-            QueueThrottledCompute(unifiedStacks);
+
+            QueueThrottledCompute(unifiedStacks, changedIndices);
         }
 
         private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables)
@@ -161,8 +163,13 @@ namespace CookBook
         internal static void OnMaxDepthChanged(object _, EventArgs __)
         {
             if (_planner == null) return;
+
             _planner.SetMaxDepth(CookBook.MaxDepth.Value);
-            if (IsChefStage()) QueueThrottledCompute(InventoryTracker.GetUnifiedStacksCopy());
+
+            if (IsChefStage())
+            {
+                QueueThrottledCompute(InventoryTracker.GetUnifiedStacksCopy(), null);
+            }
         }
 
         // -------------------- Chef Events --------------------
@@ -172,7 +179,7 @@ namespace CookBook
 
             if (!_subscribedInventoryHandler)
             {
-                InventoryTracker.OnInventoryChanged += OnInventoryChanged;
+                InventoryTracker.OnInventoryChangedWithIndices += OnInventoryChanged;
                 _subscribedInventoryHandler = true;
             }
             CraftingObjectiveTracker.Init();
@@ -187,7 +194,7 @@ namespace CookBook
 
             if (_subscribedInventoryHandler)
             {
-                InventoryTracker.OnInventoryChanged -= OnInventoryChanged;
+                InventoryTracker.OnInventoryChangedWithIndices -= OnInventoryChanged;
                 _subscribedInventoryHandler = false;
             }
             CraftingExecutionHandler.Abort();
@@ -280,35 +287,33 @@ namespace CookBook
             {
                 if (!_subscribedInventoryHandler)
                 {
-                    InventoryTracker.OnInventoryChanged += OnInventoryChanged;
+                    InventoryTracker.OnInventoryChangedWithIndices += OnInventoryChanged;
                     _subscribedInventoryHandler = true;
                 }
                 TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
             }
         }
 
-        private static void QueueThrottledCompute(int[] unifiedStacks)
+        private static void QueueThrottledCompute(int[] unifiedStacks, HashSet<int> changedIndices)
         {
             if (_throttleRoutine != null) _craftingHandler.StopCoroutine(_throttleRoutine);
-            _throttleRoutine = _craftingHandler.StartCoroutine(ThrottledComputeRoutine(unifiedStacks));
+            _throttleRoutine = _craftingHandler.StartCoroutine(ThrottledComputeRoutine(unifiedStacks, changedIndices));
         }
 
         //--------------------------------------- Coroutines ---------------------------------------------
-        private static IEnumerator ThrottledComputeRoutine(int[] unifiedStacks)
+        private static IEnumerator ThrottledComputeRoutine(int[] unifiedStacks, HashSet<int> changedIndices)
         {
             yield return new WaitForSecondsRealtime(CookBook.ComputeThrottle.Value);
             if (_planner == null) yield break;
 
-            if (InventoryTracker.LastItemCountUsed != _planner.SourceItemCount)
+            if (ItemCatalog.itemCount != _planner.SourceItemCount)
             {
                 RecipeProvider.Rebuild();
-                OnRecipesBuilt(RecipeProvider.Recipes);
-            }
-            else
-            {
-                _planner.ComputeCraftable(unifiedStacks, null, false);
+
+                _planner = new CraftPlanner(RecipeProvider.Recipes, CookBook.MaxDepth.Value, _log);
             }
 
+            _planner.ComputeCraftable(unifiedStacks, changedIndices, false);
             _throttleRoutine = null;
         }
 
