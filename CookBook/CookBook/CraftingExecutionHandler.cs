@@ -41,11 +41,10 @@ namespace CookBook
                 _currentObjective = null;
             }
 
-            CraftingObjectiveTracker.Cleanup();
-            CraftingObjectiveTracker.Init();
+            if (StateController.ActiveCraftingController)
+                CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
 
-            if (StateController.ActiveCraftingController) CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
-            _log.LogInfo("[ExecutionHandler] Craft aborted.");
+            _log.LogInfo("[ExecutionHandler] Local craft aborted.");
         }
 
         private static void SetObjectiveText(string text)
