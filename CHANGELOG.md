@@ -5,7 +5,7 @@ Dates are listed in `MM/DD/YY` format.
 
 ## v1.2.6 — 12/29/25
 ### Added
-- Added sorting support to craftUI to sort based on item type (visual only to avoid recomputation)
+- Added sorting support to crafttUI to sort based on item type (visual only to avoid recomputation)
 
 ---
 
