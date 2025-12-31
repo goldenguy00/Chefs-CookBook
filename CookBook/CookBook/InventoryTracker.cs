@@ -116,6 +116,10 @@ namespace CookBook
         {
             if (!_enabled) return;
 
+            int[] currentStacks = GetUnifiedStacksFor(inv);
+
+            if (!HasPermanentChanges(inv, currentStacks)) return;
+
             if (inv == _localInventory)
             {
                 _itemsDirty = true;
@@ -127,9 +131,14 @@ namespace CookBook
                 UpdateSnapshot();
             }
         }
+
         private static void OnLocalInventoryChanged()
         {
             if (!_enabled || _localInventory == null) return;
+
+            int[] currentStacks = GetUnifiedStacksFor(_localInventory);
+            if (!HasPermanentChanges(_localInventory, currentStacks)) return;
+
             _itemsDirty = true;
             UpdateSnapshot();
         }
@@ -170,11 +179,9 @@ namespace CookBook
         private static void UpdateSnapshot()
         {
             if (!_enabled || _localInventory == null) return;
-
             if (!_itemsDirty && !_dronesDirty && !_remoteDirty && _hasSnapshot) return;
 
             int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
-
             _changedIndices.Clear();
 
             if (_itemsDirty || _cachedLocalPhysical == null)
@@ -218,6 +225,11 @@ namespace CookBook
             }
 
             _remoteDirty = false;
+
+            if (_changedIndices.Count == 0 && _hasSnapshot && !_dronesDirty && !_remoteDirty)
+            {
+                return;
+            }
 
             int[] combinedTotal = new int[totalLen];
             for (int i = 0; i < totalLen; i++) combinedTotal[i] = _cachedLocalPhysical[i];
@@ -270,6 +282,22 @@ namespace CookBook
                     }
                 }
             }
+        }
+
+        private static bool HasPermanentChanges(Inventory inv, int[] currentUnifiedStacks)
+        {
+            if (inv == null || _cachedLocalPhysical == null) return true;
+            if (inv != _localInventory) return true;
+
+            for (int i = 0; i < currentUnifiedStacks.Length; i++)
+            {
+                if (currentUnifiedStacks[i] != _cachedLocalPhysical[i])
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         //----------------------------------- Binding Logic -----------------------------------
@@ -338,11 +366,15 @@ namespace CookBook
             int slotCount = inv.GetEquipmentSlotCount();
             for (int slot = 0; slot < slotCount; slot++)
             {
-                var state = inv.GetEquipment((uint)slot, 0u);
-                if (state.equipmentIndex != EquipmentIndex.None)
+                int setCount = inv.GetEquipmentSetCount((uint)slot);
+                for (int set = 0; set < setCount; set++)
                 {
-                    int unifiedIndex = itemLen + (int)state.equipmentIndex;
-                    if (unifiedIndex < totalLen) stacks[unifiedIndex] += 1;
+                    var state = inv.GetEquipment((uint)slot, (uint)set);
+                    if (state.equipmentIndex != EquipmentIndex.None)
+                    {
+                        int unifiedIndex = itemLen + (int)state.equipmentIndex;
+                        if (unifiedIndex < totalLen) stacks[unifiedIndex] += 1;
+                    }
                 }
             }
             return stacks;
@@ -372,7 +404,6 @@ namespace CookBook
 
         /// <summary>
         /// Returns the aggregate stack (Local Items + Drones + Pooled Allied Items).
-        /// Used by the planner for the initial "Is this possible?" BFS check.
         /// </summary>
         internal static int[] GetUnifiedStacksCopy() => (_snapshot.TotalStacks != null) ? (int[])_snapshot.TotalStacks.Clone() : Array.Empty<int>();
 
@@ -384,7 +415,6 @@ namespace CookBook
 
         /// <summary>
         /// Provides the planner with specific snapshots of allied inventories.
-        /// Necessary for identifying which player can provide a specific ingredient.
         /// </summary>
         internal static Dictionary<NetworkUser, int[]> GetAlliedSnapshots()
         {

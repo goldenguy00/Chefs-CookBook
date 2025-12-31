@@ -20,12 +20,17 @@ namespace CookBook
 
             ModSettingsManager.SetModDescription("QOL crafting automation for wandering CHEF.");
 
-            // --- General Configs ---
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxDepth, new IntSliderConfig
             {
                 min = 1,
                 max = 10,
                 formatString = "{0} Steps"
+            }));
+            ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxChainsPerResult, new IntSliderConfig
+            {
+                min = 1,
+                max = 100,
+                formatString = "{0} Paths per Item"
             }));
 
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.AllowMultiplayerPooling));

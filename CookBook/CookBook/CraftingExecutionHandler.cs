@@ -129,6 +129,21 @@ namespace CookBook
                     lastPickup = PickupIndex.none;
                 }
 
+                ChefRecipe step = craftQueue.Peek();
+
+                body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
+                if (body)
+                {
+                    foreach (var ing in step.Ingredients)
+                    {
+                        if (!ing.IsItem)
+                        {
+                            SetObjectiveText($"Preparing {GetStepName(step)}...");
+                            yield return EnsureEquipmentIsActive(body, ing.EquipIndex);
+                        }
+                    }
+                }
+
                 while (StateController.ActiveCraftingController == null)
                 {
                     body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
@@ -154,12 +169,10 @@ namespace CookBook
 
                 if (StateController.ActiveCraftingController != null)
                 {
-                    ChefRecipe step = craftQueue.Peek();
                     string stepName = GetStepName(step);
                     SetObjectiveText($"Processing {stepName}...");
 
                     StateController.BatchMode = true;
-
                     StateController.ActiveCraftingController.ClearAllSlots();
 
                     bool submitAttempted = SubmitIngredients(StateController.ActiveCraftingController, step);
@@ -248,6 +261,7 @@ namespace CookBook
 
         private static bool SubmitIngredients(CraftingController controller, ChefRecipe recipe)
         {
+            var body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
             var options = controller.options;
 
             foreach (var ing in recipe.Ingredients)
@@ -289,10 +303,98 @@ namespace CookBook
             return true;
         }
 
+        private static IEnumerator EnsureEquipmentIsActive(CharacterBody body, EquipmentIndex target)
+        {
+            var inv = body.inventory;
+            if (!inv || target == EquipmentIndex.None) yield break;
+
+            int currentSlot = inv.activeEquipmentSlot;
+            int slotCount = inv.GetEquipmentSlotCount();
+
+            int targetSlot = -1;
+            int targetSet = -1;
+            for (int s = 0; s < slotCount; s++)
+            {
+                int setCount = inv.GetEquipmentSetCount((uint)s);
+                for (int set = 0; set < setCount; set++)
+                {
+                    if (inv.GetEquipment((uint)s, (uint)set).equipmentIndex == target)
+                    {
+                        targetSlot = s;
+                        targetSet = set;
+                        break;
+                    }
+                }
+                if (targetSlot != -1) break;
+            }
+
+            if (targetSlot == -1) yield break;
+
+            if (targetSlot != currentSlot)
+            {
+                var skill = body.skillLocator?.special;
+                if (skill)
+                {
+                    if (StateController.ActiveCraftingController)
+                        CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
+
+                    while (!skill.CanExecute())
+                    {
+                        yield return new WaitForSeconds(0.1f);
+                    }
+
+                    _log.LogInfo($"[Execution] Retooling to Slot {targetSlot}.");
+                    skill.ExecuteIfReady();
+
+                    float timeout = 1.0f;
+                    while (inv.activeEquipmentSlot != targetSlot && timeout > 0)
+                    {
+                        timeout -= 0.1f;
+                        yield return new WaitForSeconds(0.1f);
+                    }
+                }
+            }
+
+            int currentSet = inv.activeEquipmentSet[inv.activeEquipmentSlot];
+            int totalSets = inv.GetEquipmentSetCount((uint)inv.activeEquipmentSlot);
+
+            if (targetSet != currentSet)
+            {
+                if (StateController.ActiveCraftingController)
+                    CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
+
+                int clicks = (targetSet - currentSet + totalSets) % totalSets;
+                _log.LogInfo($"[Execution] Cycling sets ({clicks} clicks) for {target}.");
+                for (int i = 0; i < clicks; i++) inv.CallCmdSwitchToNextEquipmentInSet();
+
+                float timeout = 2.0f;
+                while (inv.activeEquipmentSet[inv.activeEquipmentSlot] != targetSet && timeout > 0)
+                {
+                    timeout -= 0.1f;
+                    yield return new WaitForSeconds(0.1f);
+                }
+            }
+        }
+
         private static int GetOwnedCount(PickupDef def, CharacterBody body)
         {
             if (def.itemIndex != ItemIndex.None) return body.inventory.GetItemCountPermanent(def.itemIndex);
-            if (def.equipmentIndex != EquipmentIndex.None) return body.inventory.currentEquipmentIndex == def.equipmentIndex ? 1 : 0;
+            if (def.equipmentIndex != EquipmentIndex.None)
+            {
+                var inv = body.inventory;
+                int slotCount = inv.GetEquipmentSlotCount();
+                for (int slot = 0; slot < slotCount; slot++)
+                {
+                    int setCount = inv.GetEquipmentSetCount((uint)slot);
+                    for (int set = 0; set < setCount; set++)
+                    {
+                        if (inv.GetEquipment((uint)slot, (uint)set).equipmentIndex == def.equipmentIndex)
+                        {
+                            return 1;
+                        }
+                    }
+                }
+            }
             return 0;
         }
 

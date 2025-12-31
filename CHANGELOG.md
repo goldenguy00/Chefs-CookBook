@@ -3,7 +3,13 @@ Dates are listed in `MM/DD/YY` format.
 
 ---
 
-## v1.2.6 — 12/29/25
+## v1.2.7 — 1/1/26 🎉
+### Changed
+- 
+
+---
+
+## v1.2.6 — 12/31/25
 ### Added
 - Added sorting support to craftUI to sort based on item type (visual only to avoid recomputation)
 

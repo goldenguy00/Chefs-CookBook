@@ -16,17 +16,16 @@ namespace CookBook
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "rainorshine";
         public const string PluginName = "CookBook";
-        public const string PluginVersion = "1.2.6";
+        public const string PluginVersion = "1.2.7";
 
         internal static ManualLogSource Log;
-        private const int DefaultMaxDepth = 3;
 
         public static ConfigEntry<int> MaxDepth;
+        public static ConfigEntry<int> MaxChainsPerResult;
         public static ConfigEntry<string> TierOrder;
         public static ConfigEntry<KeyboardShortcut> AbortKey;
         public static ConfigEntry<float> ComputeThrottle;
         public static ConfigEntry<bool> AllowMultiplayerPooling;
-
         internal static Dictionary<ItemTier, ConfigEntry<TierPriority>> TierPriorities = new();
 
         public void Awake()
@@ -37,9 +36,22 @@ namespace CookBook
             MaxDepth = Config.Bind(
                 "General",
                 "MaxDepth",
-                DefaultMaxDepth,
+                3,
                 "Maximum crafting chain depth to explore when precomputing recipe plans."
             );
+            ComputeThrottle = Config.Bind(
+                "Performance",
+                "ComputeThrottle",
+                0.5f,
+                "Delay (seconds) after inventory changes before recomputing recipes."
+            );
+            MaxChainsPerResult = Config.Bind(
+                "Performance",
+                "MaxChainsPerResult",
+                20,
+                "Maximum number of unique recipe paths to store for each result. Higher values allow more variety but significantly increase memory usage."
+            );
+
             TierOrder = Config.Bind(
                 "General",
                 "TierOrder",
@@ -52,12 +64,6 @@ namespace CookBook
                 new KeyboardShortcut(KeyCode.LeftAlt),
                 "Key to hold to abort an active auto-crafting sequence."
             );
-            ComputeThrottle = Config.Bind(
-                "Performance",
-                "ComputeThrottle",
-                0.15f,
-                "Delay (seconds) after inventory changes before recomputing recipes."
-            );
             AllowMultiplayerPooling = Config.Bind(
                 "General",
                 "Allow Multiplayer Pooling",
@@ -67,7 +73,6 @@ namespace CookBook
 
             TierManager.Init(Log);
 
-            // Inside CookBook.Awake()
             ItemCatalog.availability.CallWhenAvailable(() =>
             {
                 var defaultTiers = TierManager.ParseTierOrder(TierOrder.Value);
@@ -86,7 +91,6 @@ namespace CookBook
                 {
                     string friendlyName = TierManager.GetFriendlyName(tier);
 
-                    // 1. Bind normally
                     var configEntry = Config.Bind<TierManager.TierPriority>(
                         "Tier Sorting",
                         $"Priority_{tier}",
@@ -106,7 +110,6 @@ namespace CookBook
                     }
                 }
 
-                // Initialize UI only after all tiers are cataloged and bound
                 if (BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("com.rune580.riskofoptions"))
                 {
                     SettingsUI.Init(this);
@@ -114,8 +117,10 @@ namespace CookBook
             });
 
             MaxDepth.SettingChanged += StateController.OnMaxDepthChanged;
+            MaxChainsPerResult.SettingChanged += StateController.OnMaxChainsPerResultChanged;
             TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged;
             RecipeProvider.OnRecipesBuilt += StateController.OnRecipesBuilt;
+
             RecipeProvider.Init(Log); // Parse all chef recipe rules
             StateController.Init(Log); // Initialize chef/state logic
             DialogueHooks.Init(Log); // Initialize all Chef Dialogue Hooks
@@ -138,7 +143,7 @@ namespace CookBook
                 }
             }
             MaxDepth.SettingChanged -= StateController.OnMaxDepthChanged;
-
+            MaxChainsPerResult.SettingChanged -= StateController.OnMaxChainsPerResultChanged;
             // Clean up global event subscriptions
             RecipeProvider.OnRecipesBuilt -= StateController.OnRecipesBuilt;
             TierManager.OnTierOrderChanged -= StateController.OnTierOrderChanged;

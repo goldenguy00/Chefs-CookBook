@@ -20,8 +20,6 @@ namespace CookBook
             { RecipeFilterCategory.Utility, ItemTag.Utility }
         };
 
-        // --- Logic Hooks ---
-
         public static void InterceptIngredientAvailability(On.RoR2.CraftingController.orig_FilterAvailableOptions orig, CraftingController self)
         {
             orig(self);
@@ -52,7 +50,6 @@ namespace CookBook
         }
 
         // --- UI Logic Helpers ---
-
         public static void CycleCategory()
         {
             int next = (int)CurrentCategory + 1;

@@ -81,11 +81,24 @@ namespace CookBook
         {
             _recipes.Clear();
 
+            var uniqueRecipes = new HashSet<ChefRecipe>();
             var recipesArray = CraftableCatalog.GetAllRecipes();
+
             if (recipesArray == null || recipesArray.Length == 0)
             {
                 _log.LogWarning("RecipeProvider: no recipes returned from CraftableCatalog.GetAllRecipes().");
                 return;
+            }
+
+            foreach (var rawEntry in recipesArray)
+            {
+                if (rawEntry == null) continue;
+
+                string resName = PickupCatalog.GetPickupDef(rawEntry.result)?.internalName ?? "Unknown";
+                var rawIngs = rawEntry.GetAllPickups();
+                var rawNames = rawIngs.Select(pi => PickupCatalog.GetPickupDef(pi)?.internalName ?? "Invalid").ToList();
+
+                _log.LogDebug($"[RAW RECIPE] {string.Join(", ", rawNames)} -> {resName} (Count: {rawEntry.amountToDrop})");
             }
 
             int itemOffset = ItemCatalog.itemCount;
@@ -94,12 +107,39 @@ namespace CookBook
             {
                 if (recipeEntry == null) continue;
 
-                // 1. Resolve Result
                 PickupIndex resultPickup = recipeEntry.result;
                 if (!resultPickup.isValid || resultPickup == PickupIndex.none) continue;
 
                 PickupDef resultDef = PickupCatalog.GetPickupDef(resultPickup);
                 if (resultDef == null) continue;
+
+                List<PickupIndex> ingredientPickups = recipeEntry.GetAllPickups();
+                if (ingredientPickups == null || ingredientPickups.Count == 0) continue;
+
+                var ingredientNames = new List<string>();
+                foreach (var ingPi in ingredientPickups)
+                {
+                    var def = (ingPi.isValid && ingPi != PickupIndex.none) ? PickupCatalog.GetPickupDef(ingPi) : null;
+                    ingredientNames.Add(def?.internalName ?? "InvalidPickup");
+                }
+                string fullRecipeArrowStr = $"{string.Join(" + ", ingredientNames)} -> {resultDef.internalName}";
+
+                bool isResultValid = true;
+                if (resultDef.itemIndex != ItemIndex.None)
+                {
+                    ItemDef resItemDef = ItemCatalog.GetItemDef(resultDef.itemIndex);
+                    if (resItemDef == null || resItemDef.hidden) isResultValid = false;
+                }
+                else if (resultDef.equipmentIndex != EquipmentIndex.None)
+                {
+                    if (EquipmentCatalog.GetEquipmentDef(resultDef.equipmentIndex) == null) isResultValid = false;
+                }
+
+                if (!isResultValid)
+                {
+                    _log.LogDebug($"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because the result is hidden or null.");
+                    continue;
+                }
 
                 int resultIndex = resultDef.itemIndex != ItemIndex.None
                     ? (int)resultDef.itemIndex
@@ -107,52 +147,77 @@ namespace CookBook
 
                 if (resultIndex == -1) continue;
 
-                // 2. Resolve Raw Ingredient Indices
-                List<PickupIndex> ingredientPickups = recipeEntry.GetAllPickups();
-                if (ingredientPickups == null || ingredientPickups.Count == 0) continue;
-
                 var rawIndices = new List<int>();
+                bool allIngredientsValid = true;
+
                 foreach (var ingPi in ingredientPickups)
                 {
-                    if (!ingPi.isValid || ingPi == PickupIndex.none) continue;
-                    PickupDef ingDef = PickupCatalog.GetPickupDef(ingPi);
-                    if (ingDef == null) continue;
+                    if (!ingPi.isValid || ingPi == PickupIndex.none)
+                    {
+                        allIngredientsValid = false;
+                        break;
+                    }
 
-                    int idx = ingDef.itemIndex != ItemIndex.None
-                        ? (int)ingDef.itemIndex
-                        : (ingDef.equipmentIndex != EquipmentIndex.None ? itemOffset + (int)ingDef.equipmentIndex : -1);
+                    PickupDef ingDef = PickupCatalog.GetPickupDef(ingPi);
+                    if (ingDef == null)
+                    {
+                        allIngredientsValid = false;
+                        break;
+                    }
+
+                    int idx = -1;
+                    if (ingDef.itemIndex != ItemIndex.None)
+                    {
+                        ItemDef itemDef = ItemCatalog.GetItemDef(ingDef.itemIndex);
+
+                        if (itemDef == null || itemDef.hidden)
+                        {
+                            _log.LogDebug($"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because ingredient {itemDef?.name} is hidden or has no tags.");
+                            allIngredientsValid = false;
+                            break;
+                        }
+                        idx = (int)ingDef.itemIndex;
+                    }
+                    else if (ingDef.equipmentIndex != EquipmentIndex.None)
+                    {
+                        EquipmentDef equipDef = EquipmentCatalog.GetEquipmentDef(ingDef.equipmentIndex);
+                        if (equipDef == null)
+                        {
+                            _log.LogDebug($"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because equipment {equipDef?.name} is null.");
+                            allIngredientsValid = false;
+                            break;
+                        }
+                        idx = itemOffset + (int)ingDef.equipmentIndex;
+                    }
 
                     if (idx != -1) rawIndices.Add(idx);
+                    else { allIngredientsValid = false; break; }
                 }
 
-                if (rawIndices.Count == 0) continue;
+                if (!allIngredientsValid || rawIndices.Count == 0) continue;
 
-                bool isPureBulk = rawIndices.Distinct().Count() == 1;
-
-                if (isPureBulk && rawIndices.Count > 1)
+                if (rawIndices.Distinct().Count() == 1 && rawIndices.Count > 1)
                 {
                     var consolidated = new Ingredient(rawIndices[0], rawIndices.Count);
-                    var recipe = new ChefRecipe(resultIndex, recipeEntry.amountToDrop, new[] { consolidated });
-                    _recipes.Add(recipe);
+                    uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, new[] { consolidated }));
                 }
                 else if (rawIndices.Count <= 2)
                 {
                     var ings = rawIndices.Select(idx => new Ingredient(idx, 1)).ToArray();
-                    var recipe = new ChefRecipe(resultIndex, recipeEntry.amountToDrop, ings);
-                    _recipes.Add(recipe);
+                    uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, ings));
                 }
-                else
+                else // split recipes based on the alternative secondary ingredients
                 {
                     var baseIdx = rawIndices[0];
                     for (int i = 1; i < rawIndices.Count; i++)
                     {
                         var pair = new Ingredient[] { new Ingredient(baseIdx, 1), new Ingredient(rawIndices[i], 1) };
-                        var recipe = new ChefRecipe(resultIndex, recipeEntry.amountToDrop, pair);
-                        _recipes.Add(recipe);
+                        uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, pair));
                     }
                 }
             }
 
+            _recipes.AddRange(uniqueRecipes);
             _recipesBuilt = true;
             _log.LogInfo($"RecipeProvider: Built {_recipes.Count} explicit recipes.");
             OnRecipesBuilt?.Invoke(_recipes);

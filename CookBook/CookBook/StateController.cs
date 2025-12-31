@@ -172,6 +172,16 @@ namespace CookBook
             }
         }
 
+        internal static void OnMaxChainsPerResultChanged(object _, EventArgs __)
+        {
+            if (_planner == null) return;
+
+            if (IsChefStage())
+            {
+                QueueThrottledCompute(InventoryTracker.GetUnifiedStacksCopy(), null);
+            }
+        }
+
         // -------------------- Chef Events --------------------
         private static void EnableChef()
         {
