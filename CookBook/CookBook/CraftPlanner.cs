@@ -114,7 +114,8 @@ namespace CookBook
                     var (phys, drone, trades) = CalculateSplitCosts(null, recipe);
                     if (phys == null) continue;
 
-                    var chain = new RecipeChain(new[] { recipe }, phys, drone, trades);
+                    long sig = (long)recipe.GetHashCode();
+                    var chain = new RecipeChain(new[] { recipe }, phys, drone, trades, sig);
                     if (seenSignatures.Add(chain.CanonicalSignature)) AddChainToResults(discovered, queue, chain);
                 }
             }
@@ -136,7 +137,7 @@ namespace CookBook
                     {
                         if (!IsCausallyLinked(existingChain, nextRecipe)) continue;
 
-                        long newSig = RecipeChain.CalculateSignatureWithPotentialStep(existingChain.Steps, nextRecipe);
+                        long newSig = RecipeChain.CalculateRollingSignature(existingChain.CanonicalSignature, nextRecipe);
                         if (!seenSignatures.Add(newSig)) continue;
 
                         if (CanAffordRecipe(unifiedStacks, nextRecipe, existingChain))
@@ -145,7 +146,7 @@ namespace CookBook
                             if (phys == null) continue;
 
                             var extendedSteps = existingChain.Steps.Concat(new[] { nextRecipe }).ToList();
-                            var newChain = new RecipeChain(extendedSteps, phys, drone, trades);
+                            var newChain = new RecipeChain(extendedSteps, phys, drone, trades, newSig);
 
                             AddChainToResults(discovered, queue, newChain);
                         }
@@ -293,9 +294,9 @@ namespace CookBook
                     {
                         var trade = new TradeRecipe(ally.Key, idx);
 
-                        long sig = chain == null
-                            ? RecipeChain.CalculateCanonicalSignature(new[] { (ChefRecipe)trade })
-                            : RecipeChain.CalculateSignatureWithPotentialStep(chain.Steps, trade);
+                        long sig = (chain == null)
+                            ? (long)trade.GetHashCode()
+                            : RecipeChain.CalculateRollingSignature(chain.CanonicalSignature, trade);
 
                         if (!signatures.Add(sig)) continue;
 
@@ -303,7 +304,6 @@ namespace CookBook
                             ? new List<ChefRecipe> { trade }
                             : chain.Steps.Concat(new[] { (ChefRecipe)trade }).ToList();
 
-                        // Generate the sparse TradeRequirement array for this new path
                         var tradeRequirements = newSteps.OfType<TradeRecipe>()
                             .GroupBy(t => new { t.Donor, t.ItemUnifiedIndex })
                             .Select(g => new TradeRequirement
@@ -469,33 +469,28 @@ namespace CookBook
             internal RecipeChain(IEnumerable<ChefRecipe> steps,
                          IEnumerable<Ingredient> phys,
                          IEnumerable<Ingredient> drones,
-                         IEnumerable<TradeRequirement> trades)
+                         IEnumerable<TradeRequirement> trades,
+                         long? signature = null)
             {
                 Steps = steps.ToArray();
                 PhysicalCostSparse = phys?.Where(i => i.Count > 0).ToArray() ?? Array.Empty<Ingredient>();
                 DroneCostSparse = drones?.Where(i => i.Count > 0).ToArray() ?? Array.Empty<Ingredient>();
                 AlliedTradeSparse = trades?.ToArray() ?? Array.Empty<TradeRequirement>();
-                CanonicalSignature = CalculateCanonicalSignature(Steps);
+
+                CanonicalSignature = signature ?? CalculateCanonicalSignature(Steps);
             }
 
-            internal static long CalculateCanonicalSignature(IReadOnlyList<ChefRecipe> chain)
+            internal static long CalculateCanonicalSignature(IEnumerable<ChefRecipe> chain)
             {
-                if (chain == null || chain.Count == 0) return 0xDEADBEEF;
-                var hashes = chain.Select(r => r.GetHashCode()).ToList();
-                hashes.Sort();
-                long sig = 17;
-                foreach (int h in hashes) sig = sig * 31 + h;
+                if (chain == null) return 0;
+                long sig = 0;
+                foreach (var r in chain) sig ^= (long)r.GetHashCode();
                 return sig;
             }
 
-            internal static long CalculateSignatureWithPotentialStep(IReadOnlyList<ChefRecipe> currentSteps, ChefRecipe next)
+            internal static long CalculateRollingSignature(long currentSignature, ChefRecipe next)
             {
-                var hashes = currentSteps.Select(r => r.GetHashCode()).ToList();
-                hashes.Add(next.GetHashCode());
-                hashes.Sort();
-                long signature = 17;
-                foreach (int h in hashes) signature = signature * 31 + h;
-                return signature;
+                return currentSignature ^ (long)next.GetHashCode();
             }
         }
     }
