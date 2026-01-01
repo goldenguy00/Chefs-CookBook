@@ -24,10 +24,10 @@ namespace CookBook
             _runner = runner;
         }
 
-        public static void ExecuteChain(CraftPlanner.RecipeChain chain)
+        public static void ExecuteChain(CraftPlanner.RecipeChain chain, int repeatCount)
         {
             Abort();
-            _craftingRoutine = _runner.StartCoroutine(CraftChainRoutine(chain));
+            _craftingRoutine = _runner.StartCoroutine(CraftChainRoutine(chain, repeatCount));
         }
 
         public static void Abort()
@@ -47,28 +47,7 @@ namespace CookBook
             _log.LogInfo("[ExecutionHandler] Local craft aborted.");
         }
 
-        private static void SetObjectiveText(string text)
-        {
-            if (_currentObjective == null)
-            {
-                _currentObjective = CraftingObjectiveTracker.CreateObjective(text);
-            }
-            else
-            {
-                _currentObjective.UpdateText(text);
-            }
-        }
-
-        private static void CompleteCurrentObjective()
-        {
-            if (_currentObjective != null)
-            {
-                _currentObjective.Complete();
-                _currentObjective = null;
-            }
-        }
-
-        private static IEnumerator CraftChainRoutine(CraftPlanner.RecipeChain chain)
+        private static IEnumerator CraftChainRoutine(CraftPlanner.RecipeChain chain, int repeatCount)
         {
             var body = LocalUserManager.GetFirstLocalUser()?.cachedBody;
             if (!body) { Abort(); yield break; }
@@ -114,12 +93,26 @@ namespace CookBook
                 }
             }
 
-            Queue<ChefRecipe> craftQueue = new Queue<ChefRecipe>(chain.Steps.Where(s => !(s is TradeRecipe)));
+            Queue<ChefRecipe> craftQueue = new Queue<ChefRecipe>();
+            var singleChainSteps = chain.Steps.Where(s => !(s is TradeRecipe)).ToList();
+
+            for (int i = 0; i < repeatCount; i++)
+            {
+                foreach (var step in singleChainSteps)
+                {
+                    craftQueue.Enqueue(step);
+                }
+            }
+
             PickupIndex lastPickup = PickupIndex.none;
             int lastQty = 0;
+            int totalSteps = craftQueue.Count;
+            int completedSteps = 0;
 
             while (craftQueue.Count > 0)
             {
+                if (CookBook.AbortKey.Value.IsPressed()) { Abort(); yield break; }
+
                 if (lastPickup != PickupIndex.none)
                 {
                     var def = PickupCatalog.GetPickupDef(lastPickup);
@@ -194,6 +187,7 @@ namespace CookBook
                             _log.LogInfo($"[Execution] {stepName} verified and server-synced.");
 
                             craftQueue.Dequeue();
+                            completedSteps++;
 
                             lastQty = step.ResultCount;
                             lastPickup = GetPickupIndex(step);
@@ -216,7 +210,8 @@ namespace CookBook
                 }
             }
 
-            _log.LogInfo("[ExecutionHandler] Chain Complete.");
+            if (lastPickup != PickupIndex.none) yield return WaitForPendingPickup(lastPickup, lastQty);
+            _log.LogInfo($"[ExecutionHandler] Finished {completedSteps}/{totalSteps} steps.");
             Abort();
         }
 
@@ -433,6 +428,27 @@ namespace CookBook
             if (unifiedIndex < ItemCatalog.itemCount)
                 return PickupCatalog.FindPickupIndex((ItemIndex)unifiedIndex);
             return PickupCatalog.FindPickupIndex((EquipmentIndex)(unifiedIndex - ItemCatalog.itemCount));
+        }
+
+        private static void SetObjectiveText(string text)
+        {
+            if (_currentObjective == null)
+            {
+                _currentObjective = CraftingObjectiveTracker.CreateObjective(text);
+            }
+            else
+            {
+                _currentObjective.UpdateText(text);
+            }
+        }
+
+        private static void CompleteCurrentObjective()
+        {
+            if (_currentObjective != null)
+            {
+                _currentObjective.Complete();
+                _currentObjective = null;
+            }
         }
     }
 }

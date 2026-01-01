@@ -4,8 +4,18 @@ Dates are listed in `MM/DD/YY` format.
 ---
 
 ## v1.2.7 — 1/1/26 🎉
-### Changed
-- 
+### Changed (many optimizations)
+- Now uses a commutative hash to cheaply cull permutations EARLY
+- Added final pass in recipeprovider to validate and cull all recipes that are permutations of one another, as well as remove all malformed recipes (those that use uncraftable items)
+- Moved the logic from IsChainEfficient into IsCausallyLinked to cull chains early
+- Implemented Dominance Culling to kill chains early if a better path exists based on item weighting
+- Updated inventorytracker hook to only fire on real inventory changes (no longer fires from using equipment or gaining/losing temp items)
+- Figured out how to change the active equipment slot in a client-safe fashion, automatically happens before the craft is attempted (MUL-T included!)
+### Added
+- Added support for controlling where equipment recipe rows go in the tiermanager sorting
+- Added support for controlling the sort order by index
+- Added support for repeatedly executing a craft chain N times via a text box next to the final craft button
+- Added protection against crafting illegal items (if you own a voided item, blocks using the non-voided version in chains). Toggleable in settings
 
 ---
 

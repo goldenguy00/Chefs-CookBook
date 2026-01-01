@@ -90,17 +90,6 @@ namespace CookBook
                 return;
             }
 
-            foreach (var rawEntry in recipesArray)
-            {
-                if (rawEntry == null) continue;
-
-                string resName = PickupCatalog.GetPickupDef(rawEntry.result)?.internalName ?? "Unknown";
-                var rawIngs = rawEntry.GetAllPickups();
-                var rawNames = rawIngs.Select(pi => PickupCatalog.GetPickupDef(pi)?.internalName ?? "Invalid").ToList();
-
-                _log.LogDebug($"[RAW RECIPE] {string.Join(", ", rawNames)} -> {resName} (Count: {rawEntry.amountToDrop})");
-            }
-
             int itemOffset = ItemCatalog.itemCount;
 
             foreach (var recipeEntry in recipesArray)
@@ -221,6 +210,48 @@ namespace CookBook
             _recipesBuilt = true;
             _log.LogInfo($"RecipeProvider: Built {_recipes.Count} explicit recipes.");
             OnRecipesBuilt?.Invoke(_recipes);
+        }
+
+        /// <summary>
+        /// Generates a transient, filtered list of recipes based on current void corruptions.
+        /// Does not modify the underlying master list.
+        /// </summary>
+        internal static List<ChefRecipe> GetFilteredRecipes(HashSet<ItemIndex> corruptedIndices)
+        {
+            if (!CookBook.PreventCorruptedCrafting.Value || corruptedIndices == null || corruptedIndices.Count == 0)
+            {
+                return new List<ChefRecipe>(_recipes);
+            }
+
+            var transientList = new List<ChefRecipe>();
+
+            foreach (var recipe in _recipes)
+            {
+                if (recipe.ResultIndex < ItemCatalog.itemCount)
+                {
+                    if (corruptedIndices.Contains((ItemIndex)recipe.ResultIndex))
+                    {
+                        continue;
+                    }
+                }
+
+                bool hasCorruptedIngredient = false;
+                foreach (var ingredient in recipe.Ingredients)
+                {
+                    if (ingredient.IsItem && corruptedIndices.Contains(ingredient.ItemIndex))
+                    {
+                        hasCorruptedIngredient = true;
+                        break;
+                    }
+                }
+
+                if (!hasCorruptedIngredient)
+                {
+                    transientList.Add(recipe);
+                }
+            }
+
+            return transientList;
         }
     }
 

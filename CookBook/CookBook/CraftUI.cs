@@ -3,7 +3,6 @@ using RoR2;
 using RoR2.UI;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -49,6 +48,7 @@ namespace CookBook
         private static Image _globalCraftButtonImage;
         private static PathRowRuntime _selectedPathUI;
         private static RecipeChain _selectedChainData;
+        private static TMP_InputField _repeatInputField;
 
         private static Sprite _solidPointSprite;
         private static Sprite _taperedGradientSprite;
@@ -126,7 +126,7 @@ namespace CookBook
 
             _currentController = controller;
             if (_cookbookRoot != null) return;
-            var craftingPanel = UnityEngine.Object.FindObjectOfType<CraftingPanel>();
+            var craftingPanel = Object.FindObjectOfType<CraftingPanel>();
 
             if (!craftingPanel) return;
 
@@ -142,10 +142,8 @@ namespace CookBook
 
             if (!labelRect) return;
 
-            // Preserve current on-screen position
             labelRect.SetParent(bgMainRect, worldPositionStays: true);
 
-            // base width references
             float invBaseWidth = RoundToEven(invRect ? invRect.rect.width : 0f);
             float invBaseHeight = RoundToEven(invRect ? invRect.rect.height : 0f);
             float craftBaseWidth = RoundToEven(craftBgRect ? craftBgRect.rect.width : 0);
@@ -163,7 +161,6 @@ namespace CookBook
             float padBottom = RoundToEven(sprite ? sprite.border.y / ppu : 0f);
             float padHorizontal = padLeft + padRight;
 
-            // Widen BG
             float widthscale = 1.8f;
             float newBgWidth = RoundToEven(baseWidth * widthscale);
 
@@ -173,35 +170,27 @@ namespace CookBook
             float newInnerWidth = newBgWidth - padHorizontal;
             float newLabelWidth = newInnerWidth - 2f * labelGap;
 
-            // shrink vanilla ui margins
             float invWidthNew = RoundToEven(invBaseWidth * 0.88f);
             float invHeightNew = RoundToEven(invBaseHeight * 0.9f);
             float craftWidthNew = invWidthNew;
 
-            // clamp cookbook width to 30% of total chef UI
             float cookbookWidth = RoundToEven(Mathf.Clamp(newBgWidth * 0.3f, 260f, newInnerWidth - invBaseWidth));
 
-            // clamp gap between cookbook and crafting panel to 5% of the total width
             float gap = RoundToEven(Mathf.Clamp(newBgWidth * 0.05f, 20f, labelGap));
 
-            // extend background and label
             bgRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, newBgWidth);
             labelRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, newLabelWidth);
 
-            // shrink vanilla ui margins
             invRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, invWidthNew);
             invRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, invHeightNew);
             craftBgRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, craftWidthNew);
 
-            // recenter labelcontainer
             AlignLabelVerticallyBetween(labelRect, bgMainRect, craftBgRect);
 
-            // position craft+inventory block using left sideMargin
             float craftWidth = RoundToEven(craftBgRect.rect.width);
             float sideMargin = RoundToEven((newInnerWidth - (craftWidth + gap + cookbookWidth)) * 0.5f);
             float centerCraftPanel = RoundToEven(-newInnerWidth * 0.5f + sideMargin + craftWidth * 0.5f);
 
-            // shift vanilla UI left
             var pos = craftBgRect.anchoredPosition;
             pos.x = centerCraftPanel;
             craftBgRect.anchoredPosition = pos;
@@ -515,7 +504,7 @@ namespace CookBook
         {
             public ScrollRect ParentScroll;
 
-            public override void OnScroll(UnityEngine.EventSystems.PointerEventData data)
+            public override void OnScroll(PointerEventData data)
             {
                 if (!this.IsActive()) return;
 
@@ -635,15 +624,15 @@ namespace CookBook
             searchRect.offsetMin = new Vector2(padLeftPx, searchRect.offsetMin.y);
             searchRect.offsetMax = new Vector2(-padRightPx, searchRect.offsetMax.y);
 
-            AddBorderTapered(searchRect, new Color32(209, 209, 210, 200), bottom: Mathf.Max(1f, SearchBarBottomBorderThicknessNorm * _panelHeight));
-
             // --- Search Input ---
             GameObject inputGO = CreateUIObject("SearchInput", typeof(RectTransform), typeof(Image), typeof(TMP_InputField));
             var inputRect = inputGO.GetComponent<RectTransform>();
             inputRect.SetParent(searchRect, false);
             inputRect.anchorMin = Vector2.zero;
             inputRect.anchorMax = new Vector2(0.75f, 1f);
-            inputRect.offsetMin = Vector2.zero;
+
+            float borderThickness = Mathf.Max(1f, SearchBarBottomBorderThicknessNorm * _panelHeight);
+            inputRect.offsetMin = new Vector2(0f, borderThickness);
             inputRect.offsetMax = new Vector2(-5f, 0f);
 
             var bgImage = inputGO.GetComponent<Image>();
@@ -697,9 +686,9 @@ namespace CookBook
             GameObject cycleBtnGO = CreateUIObject("CategoryCycleButton", typeof(RectTransform), typeof(Image), typeof(Button));
             var cycleRT = cycleBtnGO.GetComponent<RectTransform>();
             cycleRT.SetParent(searchRect, false);
-            cycleRT.anchorMin = new Vector2(0.8f, 0f); // Occupy the right 20%
-            cycleRT.anchorMax = new Vector2(1f, 1f);    // Match full height of container
-            cycleRT.offsetMin = new Vector2(0f, 0f);    // Flush with right edge
+            cycleRT.anchorMin = new Vector2(0.8f, 0f);
+            cycleRT.anchorMax = new Vector2(1f, 1f);
+            cycleRT.offsetMin = new Vector2(0f, borderThickness);
             cycleRT.offsetMax = Vector2.zero;
 
             var cycleImg = cycleBtnGO.GetComponent<Image>();
@@ -733,8 +722,9 @@ namespace CookBook
                 RefreshUIVisibility();
             });
 
+            AddBorderTapered(searchRect, new Color32(209, 209, 210, 200), bottom: borderThickness);
             // TODO: update general shape to match ROR2 style
-            // ------------------------ Global Craft Button) ------------------------
+            // ------------------------ Footer ------------------------
             GameObject footerGO = CreateUIObject("Footer", typeof(RectTransform));
             var footerRT = footerGO.GetComponent<RectTransform>();
 
@@ -749,6 +739,7 @@ namespace CookBook
             footerRT.offsetMin = new Vector2(padLeftPx, footerRT.offsetMin.y);
             footerRT.offsetMax = new Vector2(-padRightPx, footerRT.offsetMax.y);
 
+            // craft button
             GameObject craftBtnGO = CreateUIObject("GlobalCraftButton", typeof(RectTransform), typeof(Image), typeof(Button));
             var craftBtnRT = craftBtnGO.GetComponent<RectTransform>();
             var craftBtnImg = craftBtnGO.GetComponent<Image>();
@@ -756,7 +747,7 @@ namespace CookBook
 
             craftBtnRT.SetParent(footerRT, false);
             craftBtnRT.anchorMin = Vector2.zero;
-            craftBtnRT.anchorMax = Vector2.one;
+            craftBtnRT.anchorMax = new Vector2(0.8f, 1f);
             craftBtnRT.sizeDelta = Vector2.zero;
 
             craftBtnImg.color = new Color32(40, 40, 40, 255);
@@ -773,15 +764,49 @@ namespace CookBook
 
             btnTextTMP.text = "select a recipe";
             btnTextTMP.alignment = TextAlignmentOptions.Center;
-            btnTextTMP.fontSize = footerHeightPx * 0.5f;
-            btnTextTMP.color = new Color32(100, 100, 100, 255); // Dim text
+            btnTextTMP.fontSize = footerHeightPx * 0.45f;
+            btnTextTMP.color = new Color32(100, 100, 100, 255);
 
             _globalCraftButton = craftBtn;
             _globalCraftButtonText = btnTextTMP;
             _globalCraftButtonImage = craftBtnImg;
+            _globalCraftButton.onClick.AddListener(OnGlobalCraftButtonClicked);
+
+            // --- Repeat Craft Box ---
+            GameObject repeatGO = CreateUIObject("RepeatInput", typeof(RectTransform), typeof(Image), typeof(TMP_InputField));
+            var repeatRT = repeatGO.GetComponent<RectTransform>();
+            repeatRT.SetParent(footerRT, false);
+            repeatRT.anchorMin = new Vector2(0.8f, 0f);
+            repeatRT.anchorMax = Vector2.one;
+            repeatRT.sizeDelta = Vector2.zero;
+
+            repeatGO.GetComponent<Image>().color = new Color32(20, 20, 20, 255);
+            _repeatInputField = repeatGO.GetComponent<TMP_InputField>();
+            _repeatInputField.characterValidation = TMP_InputField.CharacterValidation.Digit;
+
+            var RepeatTextAreaRT = CreateInternal("Text Area", repeatRT, typeof(RectMask2D));
+
+            var repeatPhTMP = CreateInternal("Placeholder", RepeatTextAreaRT, typeof(TextMeshProUGUI)).GetComponent<TextMeshProUGUI>();
+            repeatPhTMP.text = "1";
+            repeatPhTMP.fontSize = footerHeightPx * 0.45f;
+            repeatPhTMP.alignment = TextAlignmentOptions.Center;
+            repeatPhTMP.color = new Color(1f, 1f, 1f, 0.3f);
+            repeatPhTMP.raycastTarget = false;
+
+            var repeatTMP = CreateInternal("Text", RepeatTextAreaRT, typeof(TextMeshProUGUI)).GetComponent<TextMeshProUGUI>();
+            repeatTMP.fontSize = footerHeightPx * 0.45f;
+            repeatTMP.alignment = TextAlignmentOptions.Center;
+            repeatTMP.color = Color.white;
+
+            // Wiring
+            _repeatInputField.textViewport = RepeatTextAreaRT;
+            _repeatInputField.placeholder = repeatPhTMP;
+            _repeatInputField.textComponent = repeatTMP;
+
+            _repeatInputField.text = string.Empty;
+            _repeatInputField.onEndEdit.AddListener(OnRepeatInputEndEdit);
 
             AddBorder(footerRT, new Color32(209, 209, 210, 200), 1f, 1f, 1f, 1f);
-            _globalCraftButton.onClick.AddListener(OnGlobalCraftButtonClicked);
 
             //------------------------ RecipeListContainer ------------------------
             GameObject listGO = CreateUIObject("RecipeListContainer", typeof(RectTransform), typeof(ScrollRect));
@@ -1600,18 +1625,34 @@ namespace CookBook
         }
 
         //==================== Helpers ====================
+        private static RectTransform CreateInternal(string name, Transform parent, params System.Type[] components)
+        {
+            var go = CreateUIObject(name, components);
+            var rt = go.GetComponent<RectTransform>();
+
+            rt.SetParent(parent, false);
+
+            // Standard Full-Stretch Anchoring
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+            rt.pivot = new Vector2(0.5f, 0.5f);
+
+            return rt;
+        }
+
         private static void UpdateCycleButtonVisuals(TextMeshProUGUI label)
         {
             if (label == null) return;
 
             label.text = RecipeFilter.GetLabel();
 
-            // Apply vanilla-themed colors based on category
             label.color = RecipeFilter.CurrentCategory switch
             {
-                RecipeFilterCategory.Damage => new Color(1f, 0.3f, 0.3f), // Soft Red
-                RecipeFilterCategory.Healing => new Color(0.3f, 1f, 0.3f), // Soft Green
-                RecipeFilterCategory.Utility => new Color(0.3f, 0.6f, 1f), // Soft Blue
+                RecipeFilterCategory.Damage => new Color32(255, 75, 50, 255),
+                RecipeFilterCategory.Healing => new Color32(119, 255, 117, 255),
+                RecipeFilterCategory.Utility => new Color32(172, 104, 248, 255),
                 _ => Color.white
             };
         }
@@ -1822,6 +1863,35 @@ namespace CookBook
         }
 
         //=========================== Events ===========================
+        private static void OnRepeatInputEndEdit(string val)
+        {
+            if (_selectedChainData == null)
+            {
+                _repeatInputField.text = string.Empty;
+                return;
+            }
+
+            if (int.TryParse(val, out int requested))
+            {
+                int max = _selectedChainData.GetMaxAffordable(
+                    InventoryTracker.GetLocalPhysicalStacks(),
+                    InventoryTracker.GetDronePotentialStacks(),
+                    InventoryTracker.GetAlliedSnapshots(),
+                    TradeTracker.GetRemainingTradeCounts()
+                );
+
+                if (requested > max)
+                {
+                    _repeatInputField.text = max.ToString();
+                    _log.LogInfo($"[UI] Clamped repetition count to max affordable: {max}");
+                }
+                else if (requested < 1)
+                {
+                    _repeatInputField.text = "1";
+                }
+            }
+        }
+
         internal static void OnPathSelected(PathRowRuntime clickedPath)
         {
             _currentHoveredPath = clickedPath;
@@ -1846,12 +1916,36 @@ namespace CookBook
                 _globalCraftButtonImage.color = new Color32(206, 198, 143, 200);
                 _globalCraftButtonText.text = "craft";
             }
+
+            int max = clickedPath.Chain.GetMaxAffordable(
+                InventoryTracker.GetLocalPhysicalStacks(),
+                InventoryTracker.GetDronePotentialStacks(),
+                InventoryTracker.GetAlliedSnapshots(),
+                TradeTracker.GetRemainingTradeCounts()
+            );
+
+            _repeatInputField.text = "1";
+            if (_repeatInputField.placeholder is TextMeshProUGUI ph)
+            {
+                ph.text = $"max {max}";
+            }
+
         }
 
         private static void OnGlobalCraftButtonClicked()
         {
             if (_selectedChainData == null) return;
-            StateController.RequestCraft(_selectedChainData);
+            if (!int.TryParse(_repeatInputField.text, out int count)) count = 1;
+
+            int max = _selectedChainData.GetMaxAffordable(
+                InventoryTracker.GetLocalPhysicalStacks(),
+                InventoryTracker.GetDronePotentialStacks(),
+                InventoryTracker.GetAlliedSnapshots(),
+                TradeTracker.GetRemainingTradeCounts()
+            );
+
+            int finalCount = Mathf.Clamp(count, 1, max);
+            StateController.RequestCraft(_selectedChainData, finalCount);
         }
 
         private static void CraftablesForUIChanged(IReadOnlyList<CraftableEntry> craftables)
@@ -2270,7 +2364,13 @@ namespace CookBook
                 _globalCraftButton.interactable = false;
                 _globalCraftButtonImage.color = new Color32(26, 22, 22, 100);
                 _globalCraftButtonText.text = "select a recipe";
-                _globalCraftButtonText.color = new Color32(255, 255, 255, 255);
+                _globalCraftButtonText.color = new Color32(100, 100, 100, 255);
+            }
+
+            if (_repeatInputField)
+            {
+                _repeatInputField.text = string.Empty;
+                if (_repeatInputField.placeholder is TextMeshProUGUI ph) ph.text = "1";
             }
         }
 
@@ -2373,13 +2473,10 @@ namespace CookBook
             if (rootCanvas != null)
             {
                 float pixelRatio = 1f / rootCanvas.scaleFactor;
-
                 return Mathf.Round(desiredPixels) * pixelRatio;
             }
 
             return desiredPixels; // Fallback
         }
-
-
     }
 }

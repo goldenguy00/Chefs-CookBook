@@ -20,21 +20,29 @@ namespace CookBook
 
             ModSettingsManager.SetModDescription("QOL crafting automation for wandering CHEF.");
 
+            ModSettingsManager.AddOption(new KeyBindOption(CookBook.AbortKey));
+            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.AllowMultiplayerPooling));
+            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.PreventCorruptedCrafting));
+            ModSettingsManager.AddOption(new ChoiceOption(CookBook.InternalSortOrder));
+
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxDepth, new IntSliderConfig
             {
                 min = 1,
                 max = 10,
-                formatString = "{0} Steps"
+                formatString = "{0}"
             }));
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxChainsPerResult, new IntSliderConfig
             {
                 min = 1,
                 max = 100,
-                formatString = "{0} Paths per Item"
+                formatString = "{0}"
             }));
-
-            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.AllowMultiplayerPooling));
-            ModSettingsManager.AddOption(new KeyBindOption(CookBook.AbortKey));
+            ModSettingsManager.AddOption(new IntSliderOption(CookBook.ComputeThrottleMs, new IntSliderConfig
+            {
+                min = 100,
+                max = 2000,
+                formatString = "{0}ms"
+            }));
 
             // --- Hierarchical Tier Sorting ---
             int tierCount = CookBook.TierPriorities.Count;

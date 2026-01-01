@@ -21,16 +21,19 @@ namespace CookBook
         {
             DefaultOrder = new[]
             {
-                ItemTier.Tier3,
+                ItemTier.FoodTier,
+                ItemTier.NoTier,
+                EquipmentPseudoTier,
                 ItemTier.Boss,
+                ItemTier.Tier3,
                 ItemTier.Tier2,
                 ItemTier.Tier1,
                 ItemTier.VoidTier3,
                 ItemTier.VoidTier2,
                 ItemTier.VoidTier1,
                 ItemTier.Lunar,
-                ItemTier.AssignedAtRuntime,
-                ItemTier.NoTier
+                ItemTier.AssignedAtRuntime
+
             };
             _seenTiers = new HashSet<ItemTier>(DefaultOrder);
             _orderMap = BuildMapFrom(DefaultOrder);
@@ -69,6 +72,14 @@ namespace CookBook
         /// </summary>
         internal static int CompareCraftableEntries(CraftPlanner.CraftableEntry a, CraftPlanner.CraftableEntry b)
         {
+            bool aIsObjective = IsObjectiveRelated(a);
+            bool bIsObjective = IsObjectiveRelated(b);
+
+            if (aIsObjective != bIsObjective)
+            {
+                return aIsObjective ? -1 : 1;
+            }
+
             bool aIsItem = a.ResultIndex < ItemCatalog.itemCount;
             ItemTier tierA = aIsItem ? ItemCatalog.GetItemDef((ItemIndex)a.ResultIndex).tier : EquipmentPseudoTier;
             string nameA = GetDisplayName(a);
@@ -83,7 +94,24 @@ namespace CookBook
 
             if (tierCmp != 0) return tierCmp;
 
-            return string.Compare(nameA, nameB, StringComparison.OrdinalIgnoreCase);
+            if (!aIsItem && !bIsItem) // Both are equipment
+            {
+                bool aIsAspect = IsEliteAspect((EquipmentIndex)(a.ResultIndex - ItemCatalog.itemCount));
+                bool bIsAspect = IsEliteAspect((EquipmentIndex)(b.ResultIndex - ItemCatalog.itemCount));
+
+                if (aIsAspect != bIsAspect)
+                {
+                    return aIsAspect ? -1 : 1;
+                }
+            }
+
+            int indexCmp = CookBook.InternalSortOrder.Value == IndexSortMode.Ascending
+                ? a.ResultIndex.CompareTo(b.ResultIndex)
+                : b.ResultIndex.CompareTo(a.ResultIndex);
+
+            if (indexCmp != 0) return indexCmp;
+
+            return string.Compare(GetDisplayName(a), GetDisplayName(b), StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -196,7 +224,7 @@ namespace CookBook
         public static TierPriority GetDefaultPriorityForTier(ItemTier tier)
         {
             if (tier == ItemTier.Tier3 || tier == ItemTier.VoidTier3) return TierPriority.Highest;
-            if (tier == ItemTier.Boss) return TierPriority.High;
+            if (tier == ItemTier.Boss || tier == ItemTier.VoidBoss) return TierPriority.High;
             if (tier == ItemTier.Tier2 || tier == ItemTier.VoidTier2) return TierPriority.Medium;
             if (tier == ItemTier.Tier1 || tier == ItemTier.VoidTier1) return TierPriority.Low;
             return TierPriority.Lowest;
@@ -213,6 +241,24 @@ namespace CookBook
         internal static ItemTier[] GetAllKnownTiers()
         {
             return _seenTiers.ToArray();
+        }
+
+        private static bool IsObjectiveRelated(CraftPlanner.CraftableEntry entry)
+        {
+            if (entry.ResultIndex < ItemCatalog.itemCount)
+            {
+                var def = ItemCatalog.GetItemDef((ItemIndex)entry.ResultIndex);
+                return def && def.ContainsTag(ItemTag.ObjectiveRelated);
+            }
+            return false;
+        }
+
+        private static bool IsEliteAspect(EquipmentIndex idx)
+        {
+            var def = EquipmentCatalog.GetEquipmentDef(idx);
+            if (!def) return false;
+
+            return def.name.StartsWith("Elite") || def.name.Contains("Affix") || def.nameToken.Contains("ELITE");
         }
 
         internal static ItemTier[] ParseTierOrder(string csv)
@@ -244,7 +290,7 @@ namespace CookBook
             { "VoidTier3", "Void Legendary" },
             { "AssignedAtRuntime", "Adaptive" },
             { "NoTier", "Misc" },
-            { "FoodTier", "Chef Ingredients" },
+            { "FoodTier", "Foods" },
             { "VoidBoss", "Void Boss" }
         };
 
@@ -255,6 +301,12 @@ namespace CookBook
             Medium,
             Low,
             Lowest
+        }
+
+        public enum IndexSortMode
+        {
+            Ascending,
+            Descending
         }
     }
 }

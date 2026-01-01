@@ -1,4 +1,5 @@
-﻿using BepInEx.Logging;
+﻿using BepInEx;
+using BepInEx.Logging;
 using RoR2;
 using System;
 using System.Collections.Generic;
@@ -14,10 +15,11 @@ namespace CookBook
         private readonly int _totalDefCount;
         private int _maxDepth;
         private readonly ManualLogSource _log;
-
-        private readonly Dictionary<int, List<ChefRecipe>> _recipesByIngredient = new();
+        private bool _voidcraftsrestricted = true;
         private readonly HashSet<int> _allIngredientIndices = new();
         private readonly int[] _maxDemand;
+        private readonly HashSet<int> _transientIngredients = new();
+        private HashSet<ItemIndex> _lastKnownCorrupted = new();
 
         private readonly int[] _needsBuffer;
         private readonly int[] _productionBuffer;
@@ -41,7 +43,6 @@ namespace CookBook
             _maxDemand = new int[bufferSize];
             _needsBuffer = new int[bufferSize];
             _productionBuffer = new int[bufferSize];
-
             BuildRecipeIndex();
         }
 
@@ -49,7 +50,6 @@ namespace CookBook
 
         private void BuildRecipeIndex()
         {
-            _recipesByIngredient.Clear();
             _allIngredientIndices.Clear();
             Array.Clear(_maxDemand, 0, _maxDemand.Length);
 
@@ -66,13 +66,6 @@ namespace CookBook
                     {
                         _maxDemand[idx] = ing.Count;
                     }
-
-                    if (!_recipesByIngredient.TryGetValue(idx, out var list))
-                    {
-                        list = new List<ChefRecipe>();
-                        _recipesByIngredient[idx] = list;
-                    }
-                    list.Add(r);
                 }
             }
         }
@@ -81,7 +74,12 @@ namespace CookBook
         {
             if (!StateController.IsChefStage() || unifiedStacks == null) return;
 
-            if (!forceUpdate && changedIndices != null && changedIndices.Count > 0 && _entryCache.Count > 0)
+            _voidcraftsrestricted = CookBook.PreventCorruptedCrafting.Value;
+
+            var currentCorrupted = InventoryTracker.GetCorruptedIndices();
+            bool corruptionShifted = !currentCorrupted.SetEquals(_lastKnownCorrupted);
+
+            if (!forceUpdate && !_voidcraftsrestricted && !corruptionShifted && changedIndices != null && changedIndices.Count > 0 && _entryCache.Count > 0)
             {
                 bool impacted = false;
                 foreach (var idx in changedIndices)
@@ -103,11 +101,20 @@ namespace CookBook
             }
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            var transientRecipes = RecipeProvider.GetFilteredRecipes(InventoryTracker.GetCorruptedIndices());
+            _transientIngredients.Clear();
+            foreach (var r in transientRecipes)
+            {
+                foreach (var ing in r.Ingredients)
+                    _transientIngredients.Add(ing.UnifiedIndex);
+            }
+
             var discovered = new Dictionary<int, List<RecipeChain>>();
             var seenSignatures = new HashSet<long>();
             var queue = new Queue<RecipeChain>();
 
-            foreach (var recipe in _recipes)
+            foreach (var recipe in transientRecipes)
             {
                 if (isRecipeAffordable(unifiedStacks, recipe, null))
                 {
@@ -122,7 +129,7 @@ namespace CookBook
 
             if (CookBook.AllowMultiplayerPooling.Value)
             {
-                InjectTradeRecipes(null, discovered, queue, seenSignatures);
+                InjectTradeRecipes(null, discovered, queue, seenSignatures, _transientIngredients);
             }
 
             for (int d = 2; d <= _maxDepth; d++)
@@ -133,7 +140,7 @@ namespace CookBook
                 for (int i = 0; i < layerSize; i++)
                 {
                     var existingChain = queue.Dequeue();
-                    foreach (var nextRecipe in _recipes)
+                    foreach (var nextRecipe in transientRecipes)
                     {
                         if (!IsCausallyLinked(existingChain, nextRecipe)) continue;
 
@@ -255,7 +262,9 @@ namespace CookBook
             return true;
         }
 
-        private void InjectTradeRecipes(RecipeChain chain, Dictionary<int, List<RecipeChain>> discovered, Queue<RecipeChain> queue, HashSet<long> signatures)
+        private void InjectTradeRecipes(RecipeChain chain, Dictionary<int, List<RecipeChain>> discovered,
+                               Queue<RecipeChain> queue, HashSet<long> signatures,
+                               HashSet<int> validIngredients)
         {
             var alliedSnapshots = InventoryTracker.GetAlliedSnapshots();
             int[] localPhysical = InventoryTracker.GetLocalPhysicalStacks();
@@ -274,7 +283,7 @@ namespace CookBook
                 int[] inv = ally.Value;
                 for (int idx = 0; idx < inv.Length; idx++)
                 {
-                    if (inv[idx] > 0 && _recipesByIngredient.ContainsKey(idx) && !LocalPhysicallyHasOrProduces(chain, localPhysical, idx))
+                    if (inv[idx] > 0 && validIngredients.Contains(idx) && !LocalPhysicallyHasOrProduces(chain, localPhysical, idx))
                     {
                         var trade = new TradeRecipe(ally.Key, idx);
 
@@ -396,18 +405,6 @@ namespace CookBook
             return net;
         }
 
-        private int GetValueSurplus(RecipeChain chain)
-        {
-            int total = 0;
-            var items = chain.Steps.Select(s => s.ResultIndex).Distinct();
-            foreach (var idx in items)
-            {
-                int net = GetNetSurplus(chain, idx);
-                if (net > 0) total += GetItemWeight(idx) * net;
-            }
-            return total;
-        }
-
         private static int GetItemWeight(int unifiedIndex)
         {
             if (unifiedIndex < ItemCatalog.itemCount)
@@ -470,7 +467,7 @@ namespace CookBook
             }
 
             if (IsChainInefficient(chain) || IsChainDominated(chain, results)) return;
-            if (list.Count >= 20) return;
+            if (list.Count >= CookBook.MaxChainsPerResult.Value) return;
 
             list.Add(chain);
             queue.Enqueue(chain);
@@ -536,6 +533,42 @@ namespace CookBook
                 AlliedTradeSparse = trades?.ToArray() ?? Array.Empty<TradeRequirement>();
 
                 CanonicalSignature = signature ?? CalculateCanonicalSignature(Steps);
+            }
+
+            public int GetMaxAffordable(
+            int[] localPhysical,
+            int[] dronePotential,
+            Dictionary<NetworkUser, int[]> alliedSnapshots,
+            Dictionary<NetworkUser, int> remainingTrades)
+            {
+                int max = int.MaxValue;
+
+                foreach (var cost in PhysicalCostSparse)
+                {
+                    if (cost.Count == 0) continue;
+                    max = Math.Min(max, localPhysical[cost.UnifiedIndex] / cost.Count);
+                }
+
+                foreach (var cost in DroneCostSparse)
+                {
+                    if (cost.Count == 0) continue;
+                    max = Math.Min(max, dronePotential[cost.UnifiedIndex] / cost.Count);
+                }
+
+                foreach (var trade in AlliedTradeSparse)
+                {
+                    if (trade.Count == 0) continue;
+
+                    if (!alliedSnapshots.TryGetValue(trade.Donor, out int[] donorInv)) return 0;
+                    int itemsAffordable = donorInv[trade.UnifiedIndex] / trade.Count;
+
+                    if (!remainingTrades.TryGetValue(trade.Donor, out int tradesLeft)) return 0;
+                    int tradesAffordable = tradesLeft / trade.Count;
+
+                    max = Math.Min(max, Math.Min(itemsAffordable, tradesAffordable));
+                }
+
+                return max == int.MaxValue ? 0 : max;
             }
 
             internal static long CalculateCanonicalSignature(IEnumerable<ChefRecipe> chain)

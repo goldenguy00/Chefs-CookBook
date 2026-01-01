@@ -3,7 +3,6 @@ using RoR2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-
 namespace CookBook
 {
     /// <summary>
@@ -25,6 +24,7 @@ namespace CookBook
         private static bool _remoteDirty = true;
         private static bool _hasSnapshot = false;
         private static readonly HashSet<int> _changedIndices = new();
+        private static HashSet<ItemIndex> _lastCorruptedIndices = new();
 
         internal static void MarkDronesDirty() => _dronesDirty = true;
         internal static void MarkItemsDirty() => _itemsDirty = true;
@@ -179,10 +179,24 @@ namespace CookBook
         private static void UpdateSnapshot()
         {
             if (!_enabled || _localInventory == null) return;
-            if (!_itemsDirty && !_dronesDirty && !_remoteDirty && _hasSnapshot) return;
+
+            HashSet<ItemIndex> currentCorrupted = new HashSet<ItemIndex>();
+            foreach (var info in RoR2.Items.ContagiousItemManager.transformationInfos)
+            {
+                if (_localInventory.GetItemCountPermanent(info.transformedItem) > 0)
+                    currentCorrupted.Add(info.originalItem);
+            }
+
+            if (!currentCorrupted.SetEquals(_lastCorruptedIndices))
+            {
+                _itemsDirty = true;
+                _lastCorruptedIndices = currentCorrupted;
+            }
 
             int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
             _changedIndices.Clear();
+
+            if (!_itemsDirty && !_dronesDirty && !_remoteDirty && _hasSnapshot) return;
 
             if (_itemsDirty || _cachedLocalPhysical == null)
             {
@@ -238,7 +252,8 @@ namespace CookBook
                 (int[])_cachedLocalPhysical.Clone(),
                 (int[])_cachedGlobalDronePotential.Clone(),
                 combinedTotal,
-                new Dictionary<int, DroneCandidate>(_globalScrapCandidates)
+                new Dictionary<int, DroneCandidate>(_globalScrapCandidates),
+                currentCorrupted
             );
 
             _hasSnapshot = true;
@@ -355,6 +370,14 @@ namespace CookBook
         }
 
         //--------------------------------- Helpers ------------------------------------------
+        /// <summary>
+        /// Exposes the corrupted indices from the current snapshot for transient recipe filtering.
+        /// </summary>
+        internal static HashSet<ItemIndex> GetCorruptedIndices()
+        {
+            return _snapshot.CorruptedIndices ?? new HashSet<ItemIndex>();
+        }
+
         private static int[] GetUnifiedStacksFor(Inventory inv)
         {
             int itemLen = ItemCatalog.itemCount;
@@ -401,6 +424,7 @@ namespace CookBook
 
         internal static int GetPhysicalCount(int index) => (_snapshot.PhysicalStacks != null && index < _snapshot.PhysicalStacks.Length) ? _snapshot.PhysicalStacks[index] : 0;
         internal static int GetDronePotentialCount(int index) => (_snapshot.DronePotential != null && index < _snapshot.DronePotential.Length) ? _snapshot.DronePotential[index] : 0;
+        internal static int[] GetDronePotentialStacks() => (_snapshot.DronePotential != null) ? (int[])_snapshot.DronePotential.Clone() : Array.Empty<int>();
 
         /// <summary>
         /// Returns the aggregate stack (Local Items + Drones + Pooled Allied Items).
@@ -449,13 +473,17 @@ namespace CookBook
         public readonly int[] TotalStacks;
 
         public readonly Dictionary<int, DroneCandidate> CheapestDrones;
+        public readonly HashSet<ItemIndex> CorruptedIndices;
 
-        public InventorySnapshot(int[] physical, int[] drone, int[] total, Dictionary<int, DroneCandidate> cheapest)
+        public InventorySnapshot(int[] physical, int[] drone, int[] total,
+                             Dictionary<int, DroneCandidate> cheapest,
+                             HashSet<ItemIndex> corrupted)
         {
             PhysicalStacks = physical ?? Array.Empty<int>();
             DronePotential = drone ?? Array.Empty<int>();
             TotalStacks = total ?? Array.Empty<int>();
             CheapestDrones = cheapest ?? new Dictionary<int, DroneCandidate>();
+            CorruptedIndices = corrupted ?? new HashSet<ItemIndex>();
         }
     }
     internal struct DroneCandidate

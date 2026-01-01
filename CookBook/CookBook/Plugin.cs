@@ -22,10 +22,12 @@ namespace CookBook
 
         public static ConfigEntry<int> MaxDepth;
         public static ConfigEntry<int> MaxChainsPerResult;
+        public static ConfigEntry<int> ComputeThrottleMs;
         public static ConfigEntry<string> TierOrder;
         public static ConfigEntry<KeyboardShortcut> AbortKey;
-        public static ConfigEntry<float> ComputeThrottle;
         public static ConfigEntry<bool> AllowMultiplayerPooling;
+        public static ConfigEntry<bool> PreventCorruptedCrafting;
+        internal static ConfigEntry<IndexSortMode> InternalSortOrder;
         internal static Dictionary<ItemTier, ConfigEntry<TierPriority>> TierPriorities = new();
 
         public void Awake()
@@ -33,30 +35,12 @@ namespace CookBook
             Log = Logger;
             Log.LogInfo("CookBook: Awake()");
 
-            MaxDepth = Config.Bind(
-                "General",
-                "MaxDepth",
-                3,
-                "Maximum crafting chain depth to explore when precomputing recipe plans."
-            );
-            ComputeThrottle = Config.Bind(
-                "Performance",
-                "ComputeThrottle",
-                0.5f,
-                "Delay (seconds) after inventory changes before recomputing recipes."
-            );
-            MaxChainsPerResult = Config.Bind(
-                "Performance",
-                "MaxChainsPerResult",
-                20,
-                "Maximum number of unique recipe paths to store for each result. Higher values allow more variety but significantly increase memory usage."
-            );
 
-            TierOrder = Config.Bind(
+            AllowMultiplayerPooling = Config.Bind(
                 "General",
-                "TierOrder",
-                "Tier3,Tier2,Tier1,Boss,Lunar,VoidTier3,VoidTier2,VoidTier1,AssignedAtRuntime,NoTier",
-                "Comma-separated tier order for sorting craftable items."
+                "Allow Multiplayer Pooling",
+                false,
+                "If true, the planner will include items owned by teammates in its search (requires SPEX trades)."
             );
             AbortKey = Config.Bind(
                 "General",
@@ -64,11 +48,43 @@ namespace CookBook
                 new KeyboardShortcut(KeyCode.LeftAlt),
                 "Key to hold to abort an active auto-crafting sequence."
             );
-            AllowMultiplayerPooling = Config.Bind(
-                "General",
-                "Allow Multiplayer Pooling",
-                false,
-                "If true, the planner will include items owned by teammates in its search (requires SPEX trades)."
+
+            MaxDepth = Config.Bind(
+                "Logic",
+                "Max Chain Depth",
+                3,
+                "Maximum crafting chain depth to explore when precomputing recipe plans. Higher values allow more indirect chains but increase compute time"
+            );
+            PreventCorruptedCrafting = Config.Bind(
+                "Logic",
+                "Prevent Corrupted Crafting",
+                true,
+                "If enabled, recipes for base items will be hidden/disabled if you hold their Void counterpart (e.g., hiding Ukulele recipes if you have Polylute)."
+            );
+
+            ComputeThrottleMs = Config.Bind(
+                "Performance",
+                "Computation Throttle",
+                500,
+                "Delay (ms) after inventory changes before recomputing recipes."
+            );
+            MaxChainsPerResult = Config.Bind(
+                "Performance",
+                "Max Paths Per Result",
+                40,
+                "Maximum number of unique recipe paths to store for each result. Higher values allow more variety but increase compute time and memory usage."
+            );
+            InternalSortOrder = Config.Bind(
+                "Tier Sorting",
+                "Indexing Sort Mode",
+                IndexSortMode.Descending,
+                "How to sort items within the same tier: Ascending (0->99) or Descending (99->0)."
+            );
+            TierOrder = Config.Bind(
+                "Tier Sorting",
+                "Tier Priority Order",
+                "FoodTier,NoTier,Equipment,Boss,Tier3,Tier2,Tier1,VoidTier3,VoidTier2,VoidTier1,Lunar",
+                "The CSV order of item tiers for sorting. Tiers earlier in the list appear higher in the UI."
             );
 
             TierManager.Init(Log);
@@ -118,6 +134,7 @@ namespace CookBook
 
             MaxDepth.SettingChanged += StateController.OnMaxDepthChanged;
             MaxChainsPerResult.SettingChanged += StateController.OnMaxChainsPerResultChanged;
+            InternalSortOrder.SettingChanged += TierManager.OnTierPriorityChanged;
             TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged;
             RecipeProvider.OnRecipesBuilt += StateController.OnRecipesBuilt;
 

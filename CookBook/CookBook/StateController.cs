@@ -234,10 +234,10 @@ namespace CookBook
         }
 
         //-------------------------------- Craft Handling ----------------------------------
-        internal static void RequestCraft(CraftPlanner.RecipeChain chain)
+        internal static void RequestCraft(CraftPlanner.RecipeChain chain, int count)
         {
             if (ActiveCraftingController == null || chain == null) return;
-            CraftingExecutionHandler.ExecuteChain(chain);
+            CraftingExecutionHandler.ExecuteChain(chain, count);
         }
 
         internal static void AbortCraft()
@@ -312,7 +312,7 @@ namespace CookBook
         //--------------------------------------- Coroutines ---------------------------------------------
         private static IEnumerator ThrottledComputeRoutine(int[] unifiedStacks, HashSet<int> changedIndices)
         {
-            yield return new WaitForSecondsRealtime(CookBook.ComputeThrottle.Value);
+            yield return new WaitForSecondsRealtime(CookBook.ComputeThrottleMs.Value / 1000f);
             if (_planner == null) yield break;
 
             if (ItemCatalog.itemCount != _planner.SourceItemCount)

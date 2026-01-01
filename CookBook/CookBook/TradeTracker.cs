@@ -58,5 +58,17 @@ namespace CookBook
             int used = _usedTrades.TryGetValue(user.netId, out int count) ? count : 0;
             return Mathf.Max(0, _maxTradesCache - used);
         }
+
+        public static Dictionary<NetworkUser, int> GetRemainingTradeCounts()
+        {
+            var map = new Dictionary<NetworkUser, int>();
+            foreach (var playerController in PlayerCharacterMasterController.instances)
+            {
+                var netUser = playerController.networkUser;
+                if (!netUser) continue;
+                map[netUser] = GetRemainingTrades(netUser);
+            }
+            return map;
+        }
     }
 }
