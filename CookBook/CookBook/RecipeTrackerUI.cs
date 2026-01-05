@@ -1,127 +1,244 @@
-﻿using RoR2;
+﻿using BepInEx.Logging;
+using RoR2;
 using RoR2.UI;
-using System.Collections.Generic;
+using System.Collections;
 using System.Linq;
-using TMPro;
+using System.Text;
 using UnityEngine;
 using UnityEngine.UI;
-using static CookBook.CraftPlanner;
 
 namespace CookBook
 {
     internal static class RecipeTrackerUI
     {
-        public static void Init()
+        private static RectTransform _trackerRoot;
+        private static ManualLogSource _log;
+        private static bool _alignQueued;
+        private const int AlignDelayFrames = 1;
+        private const float GapPx = 5f;
+        private const float PanelHeightPx = 200f; // this shouldn't be fixed, our container must hug the contents and expand with them as the dropdown expands/retracts. 
+
+        // All normalized values are relative to a single strip's height/width
+        // All text normalization is relative to strip height
+
+        // TrackerPanel
+        private const float TrackerPanelPaddingTopNorm = 0.02f;
+        private const float TrackerPanelPaddingBottomNorm = 0.02f;
+        private const float TrackerPanelPaddingLeftNorm = 0f;
+        private const float TrackerPanelPaddingRightNorm = 0f;
+        private const float TrackerPanelElementSpacingNorm = 0.05f; // vertical gap between Rowtop and Dropdown
+
+        // RowTop (stretches to parent)
+        private const float RowTopHeightNorm = 1f;
+        private const float RowTopTopPaddingNorm = 0.05f;
+        private const float RowTopBottomPaddingNorm = 0.05f;
+        private const float RowTopElementSpacingNorm = 0.1f; // horizontal spacing between the dropdown arrow, recipe tracker label container, metadata, etc.
+        private const float MetaDataColumnWidthNorm = 0.3f;
+        private const float MetaDataElementVerticalSpacingNorm = 0.1f;
+        private const float DropDownArrowSizeNorm = 0.9f; // Normalized to strip height
+        private const float RowTopTextHeightNorm = 0.5f; // Normalized to strip height
+        private const float RowTopVerticalBorders = 1f;
+
+        // DropdownContainer stretches to TrackerPanel width
+        private const float DropdownContainerSpacingNorm = 0.05f; // Vertical spacing between drop down elements: Search Bar, RecipeContainer
+
+        // SearchBar stretches to DropdownContainer width
+        private const float SearchBarContainerHorizontalPaddingNorm = 0.1f;
+        private const float SearchBarContainerHeightNorm = 0.8f;
+        private const float SearchBarBottomBorderThickness = 1f;
+
+        // RecipeContainer stretches to DropdownContainer width
+        private const float RecipeContainerHorizontalPaddingNorm = 0.15f;
+        private const int MaxVisibleRecipes = 4;
+
+        // ----- RecipeRow sizing -----
+        private const float RecipeRowHeightNorm = 0.75f;
+        private const float RecipeRowLeftPaddingNorm = 0.1f;
+        private const float RecipeRowRightPaddingNorm = 0.1f;
+        private const float RecipeRowIngredientSpacingNorm = 0.1f;
+        private const float RecipeRowTextHeightNorm = 0.5f;
+
+        //----- Ingredients -------
+        private const float IngredientHeightNorm = 0.9f;
+        private const float StackSizeTextHeightPx = 15f;
+        private const float StackMargin = 3f;
+
+        public static void Init(ManualLogSource log)
         {
-            On.RoR2.UI.ScoreboardController.Awake += OnScoreboardAwake;
-            On.RoR2.UI.ScoreboardStrip.SetMaster += OnScoreboardStripSetMaster;
+            _log = log;
+            On.RoR2.UI.ScoreboardController.Rebuild += OnScoreboardRebuild;
         }
 
-        private static void OnScoreboardAwake(On.RoR2.UI.ScoreboardController.orig_Awake orig, ScoreboardController self)
+        private static void OnScoreboardRebuild(On.RoR2.UI.ScoreboardController.orig_Rebuild orig, ScoreboardController self)
         {
+            // Let vanilla fully rebuild first.
             orig(self);
+            if (!self) return;
 
-            GameObject scrollGO = new GameObject("CookBookScoreboardScroll", typeof(RectTransform), typeof(ScrollRect), typeof(Image));
-            scrollGO.transform.SetParent(self.container.parent, false);
+            var containerRT = self.transform.Find("Container") as RectTransform;
+            if (!containerRT) return;
 
-            RectTransform scrollRT = scrollGO.GetComponent<RectTransform>();
+            var strips = containerRT.Find("StripContainer") as RectTransform;
+            if (!strips) return;
 
-            scrollRT.anchorMin = self.container.anchorMin;
-            scrollRT.anchorMax = self.container.anchorMax;
-            scrollRT.pivot = self.container.pivot;
-            scrollRT.sizeDelta = self.container.sizeDelta;
-            scrollRT.anchoredPosition = self.container.anchoredPosition;
+            if (!_trackerRoot)
+                InitializeCookBookUI(containerRT);
 
-            GameObject viewport = new GameObject("Viewport", typeof(RectTransform), typeof(RectMask2D));
-            viewport.transform.SetParent(scrollRT, false);
-            RectTransform viewRT = viewport.GetComponent<RectTransform>();
-
-            viewRT.anchorMin = Vector2.zero;
-            viewRT.anchorMax = Vector2.one;
-            viewRT.pivot = new Vector2(0.5f, 1f);
-            viewRT.sizeDelta = Vector2.zero;
-
-            self.container.SetParent(viewRT, false);
-
-            ScrollRect scroll = scrollGO.GetComponent<ScrollRect>();
-            scroll.content = self.container;
-            scroll.viewport = viewRT;
-            scroll.horizontal = false;
-            scroll.vertical = true;
-            scroll.scrollSensitivity = 30f; // Ensure it feels responsive
-
-            var img = scrollGO.GetComponent<Image>();
-            img.color = new Color(0, 0, 0, 0);
-
-            var fitter = self.container.gameObject.GetComponent<ContentSizeFitter>() ?? self.container.gameObject.AddComponent<ContentSizeFitter>();
-            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-            var vlg = self.container.GetComponent<VerticalLayoutGroup>();
-            if (vlg)
+            if (!_alignQueued)
             {
-                vlg.childControlHeight = true;
-                vlg.childForceExpandHeight = false;
-                vlg.childAlignment = TextAnchor.UpperCenter;
+                _alignQueued = true;
+                self.StartCoroutine(AlignCookbookNextFrames(self, containerRT, strips));
             }
 
-            CraftUI.AddBorder(scrollRT, Color.red, 2f, 2f, 2f, 2f);
-            CraftUI.AddBorder(viewRT, Color.green, 2f, 2f, 2f, 2f);
+            CleanupDiagnostics(containerRT);
+            CraftUI.AddBorder(containerRT, Color.white, 2f, 2f, 2f, 2f);
+            CraftUI.AddBorder(strips, Color.green, 2f, 2f, 2f, 2f);
+            if (_trackerRoot) CraftUI.AddBorder(_trackerRoot, Color.magenta, 2f, 2f, 2f, 2f);
+
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("\n=== COOKBOOK SIBLING HIERARCHY DUMP ===");
+            RecursiveDump(containerRT, sb, 0);
+            _log.LogInfo(sb.ToString());
         }
 
-        private static void OnScoreboardStripSetMaster(On.RoR2.UI.ScoreboardStrip.orig_SetMaster orig, ScoreboardStrip self, CharacterMaster newMaster)
+        private static IEnumerator AlignCookbookNextFrames(ScoreboardController self, RectTransform containerRT, RectTransform strips)
         {
-            orig(self, newMaster);
+            for (int i = 0; i < AlignDelayFrames; i++)
+                yield return null;
 
-            var tracker = self.GetComponent<PlayerRecipeTracker>();
-            if (!tracker)
+            _alignQueued = false;
+
+            if (!self || !containerRT || !strips || !_trackerRoot)
+                yield break;
+
+            Canvas.ForceUpdateCanvases();
+            LayoutRebuilder.ForceRebuildLayoutImmediate(containerRT);
+            Canvas.ForceUpdateCanvases();
+
+            _trackerRoot.SetAsLastSibling();
+
+            var cg = _trackerRoot.GetComponent<CanvasGroup>() ?? _trackerRoot.gameObject.AddComponent<CanvasGroup>();
+            cg.blocksRaycasts = false;
+            cg.interactable = false;
+
+            // ===== WIDTH from StripContainer =====
+            if (!TryGetBottomEdgeInContainerLocal(containerRT, strips, out var stripsBL, out var stripsBR))
             {
-                tracker = self.gameObject.AddComponent<PlayerRecipeTracker>();
-                tracker.InitializeUI();
+                _log.LogWarning("CookBook: Could not compute StripContainer world corners.");
+                yield break;
             }
 
-            tracker.BindToMaster(newMaster);
-        }
-    }
+            float xCenter = (stripsBL.x + stripsBR.x) * 0.5f;
+            float stripContainerWidth = stripsBR.x - stripsBL.x;
 
-    /// <summary>
-    /// Component that handles the per-player recipe list inside the scoreboard strip.
-    /// </summary>
-    internal class PlayerRecipeTracker : MonoBehaviour
-    {
-        private ScoreboardStrip _strip;
-        private CharacterMaster _master;
-        private RectTransform _dropdownRoot;
-        private bool _isExpanded;
+            // ===== VERTICAL position from bottom of LAST strip =====
+            var lastStrip = strips
+                .GetComponentsInChildren<RectTransform>(true)
+                .Where(rt => rt && rt.gameObject.activeInHierarchy && rt.name.Contains("ScoreboardStrip"))
+                .LastOrDefault();
 
-        public void InitializeUI()
-        {
-            _strip = GetComponent<ScoreboardStrip>();
+            if (!lastStrip)
+            {
+                _log.LogWarning("CookBook: Last strip not found; cannot place panel vertically.");
+                yield break;
+            }
 
-            var le = gameObject.GetComponent<LayoutElement>() ?? gameObject.AddComponent<LayoutElement>();
-            le.preferredHeight = 72f;
+            if (!TryGetBottomEdgeInContainerLocal(containerRT, lastStrip, out var lastBL, out var lastBR))
+            {
+                _log.LogWarning("CookBook: Could not compute last strip world corners.");
+                yield break;
+            }
 
-            _dropdownRoot = new GameObject("RecipeDropdown", typeof(RectTransform), typeof(LayoutElement)).GetComponent<RectTransform>();
-            _dropdownRoot.SetParent(transform, false);
+            float yTop = lastBL.y - GapPx;
 
-            var dropLE = _dropdownRoot.GetComponent<LayoutElement>();
-            dropLE.preferredHeight = 100f;
-            dropLE.flexibleWidth = 1f;
+            _trackerRoot.anchorMin = new Vector2(0.5f, 0.5f);
+            _trackerRoot.anchorMax = new Vector2(0.5f, 0.5f);
+            _trackerRoot.pivot = new Vector2(0.5f, 1f);
 
-            CraftUI.AddBorderTapered(_dropdownRoot, new Color32(209, 209, 210, 150), top: 1f);
-
-            CraftUI.AddBorder(_dropdownRoot, Color.blue, 2f, 2f, 2f, 2f);
+            _trackerRoot.sizeDelta = new Vector2(stripContainerWidth, PanelHeightPx);
+            _trackerRoot.anchoredPosition = new Vector2(xCenter, yTop);
         }
 
-        public void BindToMaster(CharacterMaster master)
+        /// <summary>
+        /// Computes bottom-left and bottom-right points of a RectTransform in Container-local coordinates,
+        /// using world corners (stable even when rect/anchoredPosition are layout-driven).
+        /// </summary>
+        private static bool TryGetBottomEdgeInContainerLocal(RectTransform containerRT, RectTransform targetRT, out Vector2 bl, out Vector2 br)
         {
-            _master = master;
-            RefreshRecipeList();
+            bl = default;
+            br = default;
+
+            if (!containerRT || !targetRT) return false;
+
+            var wc = new Vector3[4];
+            targetRT.GetWorldCorners(wc);
+
+            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                    containerRT,
+                    RectTransformUtility.WorldToScreenPoint(null, wc[0]),
+                    null,
+                    out bl))
+                return false;
+
+            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                    containerRT,
+                    RectTransformUtility.WorldToScreenPoint(null, wc[3]),
+                    null,
+                    out br))
+                return false;
+
+            return true;
         }
 
-        private void RefreshRecipeList()
+        private static void InitializeCookBookUI(RectTransform container)
         {
-            if (!_master || !_master.inventory) return;
-            // Future logic: Populate items here
+            GameObject rootGO = new GameObject("CookBook_FloatingUI", typeof(RectTransform), typeof(LayoutElement));
+            _trackerRoot = rootGO.GetComponent<RectTransform>();
+            _trackerRoot.SetParent(container, false);
+
+            var le = rootGO.GetComponent<LayoutElement>();
+            le.ignoreLayout = true;
+
+            _trackerRoot.sizeDelta = new Vector2(0f, PanelHeightPx);
+
+            var img = rootGO.AddComponent<Image>();
+            img.color = new Color(0, 0, 0, 0.6f);
+
+            _log.LogInfo("CookBook UI Initialized as a non-invasive sibling.");
+        }
+
+        private static void CleanupDiagnostics(RectTransform root)
+        {
+            var existing = root.GetComponentsInChildren<RectTransform>(true)
+                .Where(rt => rt && (rt.name.StartsWith("DB_") || rt.name.Contains("BorderGroup")));
+            foreach (var d in existing)
+                Object.Destroy(d.gameObject);
+        }
+
+        private static void RecursiveDump(Transform current, StringBuilder sb, int depth)
+        {
+            if (current == null) return;
+
+            string indent = new string(' ', depth * 4);
+            sb.Append($"{indent}[{current.name}]");
+
+            if (current is RectTransform rt)
+                sb.Append($" | Size: {rt.rect.size} | Delta: {rt.sizeDelta}");
+
+            var components = current.GetComponents<Component>()
+                .Where(c => c != null && (c is LayoutGroup || c is ContentSizeFitter || c is LayoutElement))
+                .Select(c => c.GetType().Name);
+
+            if (components.Any())
+                sb.Append($" | Layout: {string.Join(", ", components)}");
+
+            sb.AppendLine();
+
+            foreach (Transform child in current)
+            {
+                if (child.name.StartsWith("DB_")) continue;
+                RecursiveDump(child, sb, depth + 1);
+            }
         }
     }
 }

@@ -95,6 +95,7 @@ namespace CookBook
             CraftUI.Init(Log); // Initialize craft UI injection
             ChatNetworkHandler.Init(Log);
             RegisterAssets.Init();
+            RecipeTrackerUI.Init(Log);
 
             ItemCatalog.availability.CallWhenAvailable(() =>
             {
