@@ -40,8 +40,7 @@ namespace CookBook
 
             prompt.onDisplayBegin += OnPromptDisplayBegin;
             prompt.onDisplayEnd += OnPromptDisplayEnd;
-
-            _log.LogDebug("[CookBook] Hooked NetworkUIPromptController for CraftingController.");
+            DebugLog.Trace(_log, "[CookBook] Hooked NetworkUIPromptController for CraftingController.");
         }
 
         internal static void Shutdown() { On.RoR2.CraftingController.Awake -= CraftingController_Awake; }

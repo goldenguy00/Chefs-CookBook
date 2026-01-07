@@ -208,4 +208,15 @@ namespace CookBook
             CraftUI.Shutdown();
         }
     }
+
+    internal static class DebugLog
+    {
+        public static void Trace(ManualLogSource log, string message)
+        {
+            if (!CookBook.isDebugMode)
+                return;
+
+            log.LogDebug(message);
+        }
+    }
 }

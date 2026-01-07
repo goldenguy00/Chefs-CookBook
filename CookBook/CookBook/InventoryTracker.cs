@@ -500,14 +500,14 @@ namespace CookBook
             {
                 if (body && body.inventory && body.master?.playerCharacterMasterController?.networkUser?.localUser == localUser)
                 {
-                    _log.LogInfo($"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}.");
+                    DebugLog.Trace(_log, $"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}.");
 
                     RebindLocal(body.inventory);
                     UpdateSnapshot();
                     return true;
                 }
             }
-            _log.LogDebug("InventoryTracker.TryBindFromExistingBodies(): no matching local body found.");
+            DebugLog.Trace(_log, "InventoryTracker.TryBindFromExistingBodies(): no matching local body found.");
             return false;
         }
 

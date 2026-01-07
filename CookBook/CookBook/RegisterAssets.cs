@@ -52,7 +52,7 @@ namespace CookBook
 
             if (_built)
             {
-                CookBook.Log.LogInfo("CookBook: Operator icon TMP_SpriteAssets registered successfully.");
+                CookBook.Log.LogDebug("CookBook: Operator icon TMP_SpriteAssets registered successfully.");
             }
         }
 

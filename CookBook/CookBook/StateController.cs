@@ -195,7 +195,7 @@ namespace CookBook
         // -------------------- Chef Events --------------------
         private static void EnableChef()
         {
-            _log.LogInfo("Chef controller enabled.");
+            DebugLog.Trace(_log, "Chef controller enabled.");
 
             if (!_subscribedInventoryHandler)
             {
@@ -277,7 +277,7 @@ namespace CookBook
         {
             if (IsAutoCrafting)
             {
-                _log.LogInfo("Local craft Abort requested. Signaling teammates...");
+                DebugLog.Trace(_log, "Local craft Abort requested. Signaling teammates...");
 
                 ChatNetworkHandler.SendGlobalAbort();
 

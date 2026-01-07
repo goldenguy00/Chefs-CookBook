@@ -52,8 +52,7 @@ namespace CookBook
 
             string packet = $"{NetPrefix}{localUser.netId.Value}:{target.netId.Value}:{command}:{unifiedIdx}:{quantity}";
 
-            _log.LogDebug($"[Net Out] Sending packet to {target.userName}: {packet}");
-
+            DebugLog.Trace(_log, $"[Net Out] Sending packet to {target.userName}: {packet}");
             RoR2.Console.instance.SubmitCmd(localUser, $"say \"{packet}\"");
 
             _pendingAcks[target.netId.Value] = UnityEngine.Time.time;
@@ -68,8 +67,8 @@ namespace CookBook
             if (_pendingAcks.ContainsKey(target.netId.Value))
             {
                 _pendingAcks.Remove(target.netId.Value);
-                _log.LogInfo($"[Net] No ACK from {target.userName}. Falling back to raw text.");
 
+                DebugLog.Trace(_log, $"[Net] No ACK from {target.userName}. Falling back to raw text.");
                 SendRawTextFallback(target, idx, qty);
             }
         }
@@ -137,7 +136,7 @@ namespace CookBook
 
             string packet = $"{NetPrefix}{localUser.netId.Value}:0:ABORT:0:0";
 
-            _log.LogDebug($"[Net Out] Sending Global Abort: {packet}");
+            DebugLog.Trace(_log, $"[Net Out] Sending Global Abort: {packet}");
             RoR2.Console.instance.SubmitCmd(localUser, $"say \"{packet}\"");
         }
 
@@ -153,7 +152,8 @@ namespace CookBook
             // Packet: CB_NET:[MyID]:[TargetID]:SUCCESS:[ItemIdx]:0
             string packet = $"{NetPrefix}{localUser.netId.Value}:{target.netId.Value}:SUCCESS:{unifiedIdx}:0";
 
-            _log.LogDebug($"[Net Out] Sending Success signal to {target.userName} for item {unifiedIdx}");
+            DebugLog.Trace(_log, $"[Net Out] Sending Success signal to {target.userName} for item {unifiedIdx}");
+
             RoR2.Console.instance.SubmitCmd(localUser, $"say \"{packet}\"");
         }
 
@@ -189,7 +189,8 @@ namespace CookBook
 
                 if (cmd == "ACK" && targetID == localUser.netId.Value)
                 {
-                    _log.LogDebug($"[Net In] ACK received from {senderID}. Request confirmed.");
+
+                    DebugLog.Trace(_log, $"[Net In] ACK received from {senderID}. Request confirmed.");
                     _pendingAcks.Remove(senderID);
                     return;
                 }
@@ -200,7 +201,7 @@ namespace CookBook
 
                     if (cmd == "ABORT")
                     {
-                        _log.LogDebug($"[Net In] Global Abort received from Sender {senderID}");
+                        DebugLog.Trace(_log, $"[Net In] Global Abort received from Sender {senderID}");
                         ObjectiveTracker.ClearObjectivesFromSender(senderID);
                         return;
                     }

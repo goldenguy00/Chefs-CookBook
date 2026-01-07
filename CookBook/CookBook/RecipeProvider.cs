@@ -126,7 +126,7 @@ namespace CookBook
 
                 if (!isResultValid)
                 {
-                    _log.LogDebug($"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because the result is hidden or null.");
+                    DebugLog.Trace(_log, $"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because the result is hidden or null.");
                     continue;
                 }
 
@@ -161,7 +161,7 @@ namespace CookBook
 
                         if (itemDef == null || itemDef.hidden)
                         {
-                            _log.LogDebug($"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because ingredient {itemDef?.name} is hidden or has no tags.");
+                            DebugLog.Trace(_log, $"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because ingredient {itemDef?.name} is hidden or has no tags.");
                             allIngredientsValid = false;
                             break;
                         }
@@ -172,7 +172,7 @@ namespace CookBook
                         EquipmentDef equipDef = EquipmentCatalog.GetEquipmentDef(ingDef.equipmentIndex);
                         if (equipDef == null)
                         {
-                            _log.LogDebug($"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because equipment {equipDef?.name} is null.");
+                            DebugLog.Trace(_log, $"RecipeProvider: Skipping recipe {fullRecipeArrowStr} because equipment {equipDef?.name} is null.");
                             allIngredientsValid = false;
                             break;
                         }
@@ -208,7 +208,10 @@ namespace CookBook
 
             _recipes.AddRange(uniqueRecipes);
             _recipesBuilt = true;
-            _log.LogInfo($"RecipeProvider: Built {_recipes.Count} explicit recipes.");
+            if (CookBook.isDebugMode)
+            {
+                DebugLog.Trace(_log, $"RecipeProvider: Built {_recipes.Count} explicit recipes.");
+            }
             OnRecipesBuilt?.Invoke(_recipes);
         }
 

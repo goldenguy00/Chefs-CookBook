@@ -200,7 +200,7 @@ namespace CookBook
 
                 if (controller != null && controller.AllSlotsFilled() && IngredientsMatchMultiset(controller.ingredients, ResolveStepIngredients(step)))
                 {
-                    _log.LogInfo($"[Execution] {stepName} verified. Confirming craft...");
+                    DebugLog.Trace(_log, $"[Execution] {stepName} verified. Confirming craft...");
 
                     craftQueue.Dequeue();
                     completedSteps++;
@@ -238,7 +238,7 @@ namespace CookBook
                 CompleteCurrentObjective();
             }
 
-            _log.LogInfo($"[ExecutionHandler] Finished {completedSteps}/{totalSteps} steps.");
+            DebugLog.Trace(_log, $"[ExecutionHandler] Finished {completedSteps}/{totalSteps} steps.");
             Cleanup(closeUi: true);
         }
 
@@ -453,7 +453,7 @@ namespace CookBook
                     }
 
                     var opt = controller.options[idx];
-                    _log.LogDebug($"[Crafting] Pick want={want} choiceIndex={idx} optPickup={opt.pickup.pickupIndex} available={opt.available}");
+                    DebugLog.Trace(_log, $"[Crafting] Pick want={want} choiceIndex={idx} optPickup={opt.pickup.pickupIndex} available={opt.available}");
 
                     int filledBefore = CountFilled(controller.ingredients);
                     int wantCountBefore = CountOf(controller.ingredients, want);
@@ -481,7 +481,7 @@ namespace CookBook
 
                     if (!progressed)
                     {
-                        _log.LogDebug($"[Crafting] No fill-progress observed for {want}, retrying...");
+                        DebugLog.Trace(_log, $"[Crafting] No fill-progress observed for {want}, retrying...");
                         insertBudget -= 0.25f;
                         continue;
                     }
@@ -503,7 +503,7 @@ namespace CookBook
 
                     if (!inserted)
                     {
-                        _log.LogDebug($"[Crafting] Change observed but state did not settle for {want}, retrying...");
+                        DebugLog.Trace(_log, $"[Crafting] Change observed but state did not settle for {want}, retrying...");
                         insertBudget -= 0.25f;
                     }
                 }
@@ -663,7 +663,7 @@ namespace CookBook
                         yield return new WaitForSeconds(0.1f);
                     }
 
-                    _log.LogInfo($"[Execution] Retooling to Slot {targetSlot}.");
+                    DebugLog.Trace(_log, $"[Execution] Retooling to Slot {targetSlot}.");
                     skill.ExecuteIfReady();
 
                     float timeout = 1.0f;
@@ -684,7 +684,7 @@ namespace CookBook
                     CraftUI.CloseCraftPanel(StateController.ActiveCraftingController);
 
                 int clicks = (targetSet - currentSet + totalSets) % totalSets;
-                _log.LogInfo($"[Execution] Cycling sets ({clicks} clicks) for {target}.");
+                DebugLog.Trace(_log, $"[Execution] Cycling sets ({clicks} clicks) for {target}.");
                 for (int i = 0; i < clicks; i++) inv.CallCmdSwitchToNextEquipmentInSet();
 
                 float timeout = 2.0f;
@@ -762,7 +762,7 @@ namespace CookBook
             {
                 if (GetOwnedCount(def, body) >= targetCount)
                 {
-                    _log.LogDebug($"[Chain] Confirmed pickup of {def.internalName}.");
+                    DebugLog.Trace(_log, $"[Chain] Confirmed pickup of {def.internalName}.");
                     yield break;
                 }
                 yield return new WaitForSeconds(0.1f);
@@ -849,33 +849,38 @@ namespace CookBook
 
         private static void DumpChain(CraftPlanner.RecipeChain chain, int repeatCount)
         {
-            _log.LogInfo("┌──────────────────────────────────────────────────────────┐");
-            _log.LogInfo($"│ CHAIN EXECUTION: {GetItemName(chain.ResultIndex)} (x{repeatCount})");
-            _log.LogInfo("├──────────────────────────────────────────────────────────┘");
+            DebugLog.Trace(_log, "┌──────────────────────────────────────────────────────────┐");
+            DebugLog.Trace(_log, $"│ CHAIN EXECUTION: {GetItemName(chain.ResultIndex)} (x{repeatCount})");
+            DebugLog.Trace(_log, "├──────────────────────────────────────────────────────────┘");
 
             if (chain.DroneCostSparse.Length > 0)
             {
-                _log.LogInfo("│ [Resources] Drones Needed:");
+                DebugLog.Trace(_log, "│ [Resources] Drones Needed:");
                 foreach (var drone in chain.DroneCostSparse)
-                    _log.LogInfo($"│   - {GetDroneName(drone.DroneIdx)} -> 1x {GetItemName(drone.ScrapIndex)}");
+                {
+                    DebugLog.Trace(_log, $"│   - {GetDroneName(drone.DroneIdx)} -> 1x {GetItemName(drone.ScrapIndex)}");
+                }
             }
 
             if (chain.AlliedTradeSparse.Length > 0)
             {
-                _log.LogInfo("│ [Resources] Allied Trades:");
+                DebugLog.Trace(_log, "│ [Resources] Allied Trades:");
                 foreach (var trade in chain.AlliedTradeSparse)
-                    _log.LogInfo($"│   - {trade.Donor?.userName ?? "Ally"}: {trade.Count}x {GetItemName(trade.UnifiedIndex)}");
+                {
+                    DebugLog.Trace(_log, $"│   - {trade.Donor?.userName ?? "Ally"}: {trade.Count}x {GetItemName(trade.UnifiedIndex)}");
+
+                }
             }
 
-            _log.LogInfo("│ [Workflow] Sequence:");
+            DebugLog.Trace(_log, "│ [Workflow] Sequence:");
             var singleChainSteps = chain.Steps.Where(s => !(s is TradeRecipe)).ToList();
             for (int i = 0; i < singleChainSteps.Count; i++)
             {
                 var step = singleChainSteps[i];
                 string ingredients = string.Join(", ", step.Ingredients.Select(ing => $"{ing.Count}x {GetItemName(ing.UnifiedIndex)}"));
-                _log.LogInfo($"│   Step {i + 1}: [{ingredients}] —> {step.ResultCount}x {GetItemName(step.ResultIndex)}");
+                DebugLog.Trace(_log, $"│   Step {i + 1}: [{ingredients}] —> {step.ResultCount}x {GetItemName(step.ResultIndex)}");
             }
-            _log.LogInfo("└──────────────────────────────────────────────────────────");
+            DebugLog.Trace(_log, "└──────────────────────────────────────────────────────────");
         }
 
         // Helper for the dump

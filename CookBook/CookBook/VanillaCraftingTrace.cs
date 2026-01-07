@@ -1,7 +1,10 @@
 ﻿using BepInEx.Logging;
 using RoR2;
 using RoR2.UI;
+using System;
+using System.Reflection;
 using UnityEngine;
+using static RoR2.DotController;
 
 namespace CookBook
 {
@@ -38,41 +41,30 @@ namespace CookBook
                 }
                 orig(self, avail);
             };
-            _log.LogInfo("[CraftTrace] VanillaCraftingTrace hooks installed.");
+            DebugLog.Trace(_log, "[CraftTrace] VanillaCraftingTrace hooks installed.");
         }
-
-        // -----------------------------
-        // UI-layer hooks
-        // -----------------------------
 
         private static void CraftingPanel_UpdateSlotVisuals(On.RoR2.UI.CraftingPanel.orig_UpdateSlotVisuals orig, CraftingPanel self, int slotIndex)
         {
             orig(self, slotIndex);
             if (!_enabled || !self || self.craftingController == null) return;
-
-            _log.LogInfo($"[CraftTrace][UI] CraftingPanel.UpdateSlotVisuals(slotIndex={slotIndex})  " +
-                         $"slotPickup={SafePickup(self.craftingController.ingredients, slotIndex)}");
+            DebugLog.Trace(_log, $"[CraftTrace][UI] CraftingPanel.UpdateSlotVisuals(slotIndex={slotIndex}) slotPickup={SafePickup(self.craftingController.ingredients, slotIndex)}");
         }
 
         private static void CraftingPanel_UpdateAllVisuals(On.RoR2.UI.CraftingPanel.orig_UpdateAllVisuals orig, CraftingPanel self)
         {
             orig(self);
             if (!_enabled || !self || self.craftingController == null) return;
-
-            _log.LogInfo($"[CraftTrace][UI] CraftingPanel.UpdateAllVisuals()  controller={self.craftingController.GetInstanceID()} " +
-                         $"filled={self.craftingController.AllSlotsFilled()} bestFit={(self.craftingController.bestFitRecipe != null ? self.craftingController.bestFitRecipe.result.ToString() : "null")}");
+            DebugLog.Trace(_log, $"[CraftTrace][UI] CraftingPanel.UpdateAllVisuals()  controller={self.craftingController.GetInstanceID()} " +
+            $"filled={self.craftingController.AllSlotsFilled()} bestFit={(self.craftingController.bestFitRecipe != null ? self.craftingController.bestFitRecipe.result.ToString() : "null")}");
         }
-
-        // -----------------------------
-        // Picker-level hook
-        // -----------------------------
 
         private static void PickupPickerController_SubmitChoice(On.RoR2.PickupPickerController.orig_SubmitChoice orig, PickupPickerController self, int choiceIndex)
         {
             if (_enabled && self != null)
             {
                 var optInfo = DescribePickerOption(self, choiceIndex);
-                _log.LogInfo($"[CraftTrace][Picker] PickupPickerController.SubmitChoice(choiceIndex={choiceIndex}) {optInfo}");
+                DebugLog.Trace(_log, $"[CraftTrace][Picker] PickupPickerController.SubmitChoice(choiceIndex={choiceIndex}) {optInfo}");
             }
 
             orig(self, choiceIndex);
@@ -104,14 +96,14 @@ namespace CookBook
         {
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] ClearSlot(slotIndex={index}) BEFORE slotPickup={SafePickup(self.ingredients, index)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] ClearSlot(slotIndex={index}) BEFORE slotPickup={SafePickup(self.ingredients, index)}");
             }
 
             orig(self, index);
 
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] ClearSlot(slotIndex={index}) AFTER  slotPickup={SafePickup(self.ingredients, index)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] ClearSlot(slotIndex={index}) AFTER  slotPickup={SafePickup(self.ingredients, index)}");
             }
         }
 
@@ -120,14 +112,14 @@ namespace CookBook
             if (_enabled && self != null)
             {
                 var optInfo = DescribeCraftingOption(self, choiceIndex);
-                _log.LogInfo($"[CraftTrace][Ctrl] SendToSlot(choiceIndex={choiceIndex}) {optInfo}  slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] SendToSlot(choiceIndex={choiceIndex}) {optInfo}  slots={DumpSlots(self.ingredients)}");
             }
 
             orig(self, choiceIndex);
 
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] SendToSlot(choiceIndex={choiceIndex}) AFTER slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] SendToSlot(choiceIndex={choiceIndex}) AFTER slots={DumpSlots(self.ingredients)}");
             }
         }
 
@@ -136,14 +128,14 @@ namespace CookBook
             if (_enabled && self != null)
             {
                 var optInfo = DescribeCraftingOption(self, choiceIndex);
-                _log.LogInfo($"[CraftTrace][Ctrl] HandlePickupSelected(choiceIndex={choiceIndex}) {optInfo}  slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] HandlePickupSelected(choiceIndex={choiceIndex}) {optInfo}  slots={DumpSlots(self.ingredients)}");
             }
 
             orig(self, choiceIndex);
 
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] HandlePickupSelected(choiceIndex={choiceIndex}) AFTER slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] HandlePickupSelected(choiceIndex={choiceIndex}) AFTER slots={DumpSlots(self.ingredients)}");
             }
         }
 
@@ -151,14 +143,14 @@ namespace CookBook
         {
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] ConfirmButtonHit(index={index}) filled={self.AllSlotsFilled()} bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] ConfirmButtonHit(index={index}) filled={self.AllSlotsFilled()} bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} slots={DumpSlots(self.ingredients)}");
             }
 
             orig(self, index);
 
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] ConfirmButtonHit(index={index}) AFTER filled={self.AllSlotsFilled()} bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] ConfirmButtonHit(index={index}) AFTER filled={self.AllSlotsFilled()} bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} slots={DumpSlots(self.ingredients)}");
             }
         }
 
@@ -166,14 +158,14 @@ namespace CookBook
         {
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] ConfirmSelection() filled={self.AllSlotsFilled()} bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] ConfirmSelection() filled={self.AllSlotsFilled()} bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} slots={DumpSlots(self.ingredients)}");
             }
 
             orig(self);
 
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] ConfirmSelection() AFTER slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] ConfirmSelection() AFTER slots={DumpSlots(self.ingredients)}");
             }
         }
 
@@ -181,7 +173,7 @@ namespace CookBook
         {
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] FilterAvailableOptions() options={self.options?.Length ?? 0} slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] FilterAvailableOptions() options={self.options?.Length ?? 0} slots={DumpSlots(self.ingredients)}");
             }
 
             orig(self);
@@ -191,14 +183,14 @@ namespace CookBook
         {
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] OnIngredientsChanged() slots={DumpSlots(self.ingredients)}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] OnIngredientsChanged() slots={DumpSlots(self.ingredients)}");
             }
 
             orig(self);
 
             if (_enabled && self != null)
             {
-                _log.LogInfo($"[CraftTrace][Ctrl] OnIngredientsChanged() AFTER bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} filled={self.AllSlotsFilled()}");
+                DebugLog.Trace(_log, $"[CraftTrace][Ctrl] OnIngredientsChanged() AFTER bestFit={(self.bestFitRecipe != null ? self.bestFitRecipe.result.ToString() : "null")} filled={self.AllSlotsFilled()}");
             }
         }
 

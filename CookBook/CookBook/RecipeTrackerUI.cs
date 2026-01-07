@@ -98,7 +98,7 @@ namespace CookBook
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("\n=== COOKBOOK SIBLING HIERARCHY DUMP ===");
             RecursiveDump(containerRT, sb, 0);
-            _log.LogInfo(sb.ToString());
+            DebugLog.Trace(_log, sb.ToString());
         }
 
         private static IEnumerator AlignCookbookNextFrames(ScoreboardController self, RectTransform containerRT, RectTransform strips)
@@ -204,7 +204,7 @@ namespace CookBook
             var img = rootGO.AddComponent<Image>();
             img.color = new Color(0, 0, 0, 0.6f);
 
-            _log.LogInfo("CookBook UI Initialized as a non-invasive sibling.");
+            DebugLog.Trace(_log, "CookBook UI Initialized as a non-invasive sibling.");
         }
 
         private static void CleanupDiagnostics(RectTransform root)

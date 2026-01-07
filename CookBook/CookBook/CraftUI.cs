@@ -249,7 +249,7 @@ namespace CookBook
             labelRect.GetComponent<Image>().enabled = false;
             AddBorder(labelRect, new Color32(209, 209, 210, 255), 2f, 2f, 6f, 6f);
 
-            _log.LogDebug($"CraftUI.Attach: CookBook panel attached. baseWidth={baseWidth:F1}, newWidth={newBgWidth:F1}, cookbookWidth={cookbookWidth:F1}, invBaseWidth={invBaseWidth:F1}");
+            DebugLog.Trace(_log, $"CraftUI.Attach: CookBook panel attached. baseWidth={baseWidth:F1}, newWidth={newBgWidth:F1}, cookbookWidth={cookbookWidth:F1}, invBaseWidth={invBaseWidth:F1}");
             _panelWidth = cbRT.rect.width;
             _panelHeight = cbRT.rect.height;
 
@@ -1949,10 +1949,10 @@ namespace CookBook
                 float targetHeight = (visibleRows * rowHeightPx) + visibleRows * spacingPx + spacingPx;
 
                 if (runtime.DropdownLayoutElement != null) runtime.DropdownLayoutElement.preferredHeight = targetHeight;
-                else _log.LogDebug("DropDownLayoutElement was null, cant expand row.");
+                else DebugLog.Trace(_log, "DropDownLayoutElement was null, cant expand row.");
 
                 if (runtime.RowLayoutElement != null) runtime.RowLayoutElement.preferredHeight = runtime.CollapsedHeight + targetHeight;
-                else _log.LogDebug("RowLayoutElement was null, cant expand row.");
+                else DebugLog.Trace(_log, "RowLayoutElement was null, cant expand row.");
 
                 if (_sharedDropdown != null) _sharedDropdown.OpenFor(runtime);
             }
@@ -1980,10 +1980,10 @@ namespace CookBook
             if (_selectedPathUI != null && _selectedPathUI.OwnerRow == runtime) DeselectCurrentPath();
 
             if (runtime.DropdownLayoutElement != null) runtime.DropdownLayoutElement.preferredHeight = 0f;
-            else _log.LogDebug("DropDownLayoutElement was null, cant retract row.");
+            else DebugLog.Trace(_log, "DropDownLayoutElement was null, cant retract row.");
 
             if (runtime.RowLayoutElement != null) runtime.RowLayoutElement.preferredHeight = runtime.CollapsedHeight;
-            else _log.LogDebug("RowLayoutElement was null, cant retract row.");
+            else DebugLog.Trace(_log, "RowLayoutElement was null, cant retract row.");
 
             runtime.IsExpanded = false;
             LayoutRebuilder.ForceRebuildLayoutImmediate(runtime.RowTransform);

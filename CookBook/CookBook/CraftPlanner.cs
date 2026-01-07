@@ -54,7 +54,7 @@ namespace CookBook
             _allIngredientIndices.Clear();
             Array.Clear(_maxDemand, 0, _maxDemand.Length);
 
-            _log.LogInfo($"[Planner] Building Demand Index for {_recipes.Count} recipes...");
+            DebugLog.Trace(_log, $"[Planner] Building Demand Index for {_recipes.Count} recipes...");
 
             foreach (var r in _recipes)
             {
@@ -177,8 +177,7 @@ namespace CookBook
 
             finalResults.Sort(TierManager.CompareCraftableEntries);
             sw.Stop();
-
-            _log.LogDebug($"[Planner] Rebuild complete: {sw.ElapsedMilliseconds}ms for {finalResults.Count} entries.");
+            DebugLog.Trace(_log, $"[Planner] Rebuild complete: {sw.ElapsedMilliseconds}ms for {finalResults.Count} entries.");
         }
 
         private bool IsCausallyLinked(RecipeChain chain, ChefRecipe next)
