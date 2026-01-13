@@ -3,6 +3,14 @@ Dates are listed in `MM/DD/YY` format.
 
 ---
 
+## v1.3.0 - 1/12/26
+### Changed
+- Completely rewrote craftplanner algorithm, now operates on an adjacency basis to reduce the search space dramatically. Improved search completeness AND improved performance by 56%.
+### Fixed
+- globalinventorychanged now doesn't falsely fire when a nonplayer dies
+
+---
+
 ## v1.2.10 — 1/7/26
 ### Fixed
 - Fixed drone list not updating after drone death.

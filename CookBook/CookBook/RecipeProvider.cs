@@ -1,6 +1,7 @@
 ﻿using BepInEx.Logging;
 using RoR2;
 using RoR2.ContentManagement;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -22,7 +23,20 @@ namespace CookBook
         internal static IReadOnlyList<ChefRecipe> Recipes => _recipes;
 
         // fired when recipes are ready to prompt planner build 
-        internal static event System.Action<IReadOnlyList<ChefRecipe>> OnRecipesBuilt;
+        internal static event System.Action OnRecipesBuilt;
+
+        internal static int TotalDefCount { get; private set; }
+        internal static int MaskWords { get; private set; }
+        internal static ulong[][] ReqMasks { get; private set; }
+        internal static int[][] ConsumersByIngredient { get; private set; }
+        internal static int[][] ProducersByResult { get; private set; }
+        internal static int[] ResultIdxByRecipe { get; private set; }
+        internal static int[] IngAByRecipe { get; private set; }
+        internal static int[] IngBByRecipe { get; private set; }
+        internal static bool[] IsDoubleIngredientRecipe { get; private set; }
+        internal static IReadOnlyDictionary<ChefRecipe, int> MasterIndexByRecipe => _masterIndexByRecipe;
+        private static Dictionary<ChefRecipe, int> _masterIndexByRecipe = new();
+
 
         //--------------------------- LifeCycle -------------------------------
         /// <summary>
@@ -185,34 +199,132 @@ namespace CookBook
 
                 if (!allIngredientsValid || rawIndices.Count == 0) continue;
 
-                if (rawIndices.Distinct().Count() == 1 && rawIndices.Count > 1)
+                if (rawIndices.Count > 1 && rawIndices.All(x => x == rawIndices[0]))
                 {
-                    var consolidated = new Ingredient(rawIndices[0], rawIndices.Count);
-                    uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, new[] { consolidated }));
+                    int a = rawIndices[0];
+                    uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, a, a, (byte)rawIndices.Count, 0));
                 }
                 else if (rawIndices.Count <= 2)
                 {
-                    var ings = rawIndices.Select(idx => new Ingredient(idx, 1)).ToArray();
-                    uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, ings));
+                    int a = rawIndices[0];
+                    int b = (rawIndices.Count == 2) ? rawIndices[1] : -1;
+
+                    if (b == -1)
+                    {
+                        uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, a, a, 1, 0));
+                    }
+                    else
+                    {
+                        CanonicalizePair(ref a, ref b);
+
+                        if (a == b)
+                        {
+                            uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, a, a, 2, 0));
+                        }
+                        else
+                        {
+                            uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, a, b, 1, 1));
+                        }
+                    }
                 }
-                else // split recipes based on the alternative secondary ingredients
+                else
                 {
-                    var baseIdx = rawIndices[0];
+                    int baseIdx = rawIndices[0];
                     for (int i = 1; i < rawIndices.Count; i++)
                     {
-                        var pair = new Ingredient[] { new Ingredient(baseIdx, 1), new Ingredient(rawIndices[i], 1) };
-                        uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, pair));
+                        int a = baseIdx;
+                        int b = rawIndices[i];
+
+                        CanonicalizePair(ref a, ref b);
+
+                        if (a == b)
+                            uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, a, a, 2, 0));
+                        else
+                            uniqueRecipes.Add(new ChefRecipe(resultIndex, recipeEntry.amountToDrop, a, b, 1, 1));
                     }
                 }
             }
 
             _recipes.AddRange(uniqueRecipes);
+            _masterIndexByRecipe.Clear();
+            for (int i = 0; i < _recipes.Count; i++)
+                _masterIndexByRecipe[_recipes[i]] = i;
+            BuildDerivedIndices();
             _recipesBuilt = true;
             if (CookBook.isDebugMode)
             {
                 DebugLog.Trace(_log, $"RecipeProvider: Built {_recipes.Count} explicit recipes.");
             }
-            OnRecipesBuilt?.Invoke(_recipes);
+            OnRecipesBuilt?.Invoke();
+        }
+
+        private static void BuildDerivedIndices()
+        {
+            TotalDefCount = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
+            MaskWords = (TotalDefCount + 63) / 64;
+
+            var tmpConsumers = new List<int>[TotalDefCount];
+            var tmpProducers = new List<int>[TotalDefCount];
+
+            int n = _recipes.Count;
+            ResultIdxByRecipe = new int[n];
+            ReqMasks = new ulong[n][];
+            IngAByRecipe = new int[n];
+            IngBByRecipe = new int[n];
+            IsDoubleIngredientRecipe = new bool[n];
+
+            for (int i = 0; i < TotalDefCount; i++)
+            {
+                tmpConsumers[i] = new List<int>(4);
+                tmpProducers[i] = new List<int>(2);
+            }
+
+            for (int r = 0; r < n; r++)
+            {
+                var recipe = _recipes[r];
+
+                int resultIdx = recipe.ResultIndex;
+                ResultIdxByRecipe[r] = resultIdx;
+
+                if ((uint)resultIdx < (uint)TotalDefCount)
+                    tmpProducers[resultIdx].Add(r);
+
+                var mask = new ulong[MaskWords];
+
+                int a = recipe.IngA;
+                int b = recipe.HasB ? recipe.IngB : -1;
+
+                IngAByRecipe[r] = a;
+                IngBByRecipe[r] = b;
+                IsDoubleIngredientRecipe[r] = recipe.IsDouble;
+
+                if ((uint)a < (uint)TotalDefCount)
+                {
+                    int word = a >> 6;
+                    int bit = a & 63;
+                    mask[word] |= (1UL << bit);
+                    tmpConsumers[a].Add(r);
+                }
+
+                if (b != -1 && b != a && (uint)b < (uint)TotalDefCount)
+                {
+                    int word = b >> 6;
+                    int bit = b & 63;
+                    mask[word] |= (1UL << bit);
+                    tmpConsumers[b].Add(r);
+                }
+
+                ReqMasks[r] = mask;
+            }
+
+            ConsumersByIngredient = new int[TotalDefCount][];
+            ProducersByResult = new int[TotalDefCount][];
+
+            for (int i = 0; i < TotalDefCount; i++)
+            {
+                ConsumersByIngredient[i] = tmpConsumers[i].ToArray();
+                ProducersByResult[i] = tmpProducers[i].ToArray();
+            }
         }
 
         /// <summary>
@@ -223,35 +335,46 @@ namespace CookBook
         {
             if (!CookBook.PreventCorruptedCrafting.Value || corruptedIndices == null || corruptedIndices.Count == 0)
             {
+                // If you want to avoid allocating here, you can return _recipes if callers treat it as read-only.
                 return new List<ChefRecipe>(_recipes);
             }
 
-            var transientList = new List<ChefRecipe>();
+            var transientList = new List<ChefRecipe>(_recipes.Count);
+
+            int itemCount = ItemCatalog.itemCount;
 
             foreach (var recipe in _recipes)
             {
-                bool hasCorruptedIngredient = false;
-                foreach (var ingredient in recipe.Ingredients)
+                bool hasCorrupted = false;
+
+                // IngA
+                int a = recipe.IngA;
+                if ((uint)a < (uint)itemCount && corruptedIndices.Contains((ItemIndex)a))
+                    hasCorrupted = true;
+
+                // IngB (only if present)
+                if (!hasCorrupted && recipe.HasB)
                 {
-                    if (ingredient.IsItem && corruptedIndices.Contains(ingredient.ItemIndex))
-                    {
-                        hasCorruptedIngredient = true;
-                        break;
-                    }
+                    int b = recipe.IngB;
+                    if ((uint)b < (uint)itemCount && corruptedIndices.Contains((ItemIndex)b))
+                        hasCorrupted = true;
                 }
 
-                if (!hasCorruptedIngredient)
-                {
+                if (!hasCorrupted)
                     transientList.Add(recipe);
-                }
             }
 
             return transientList;
         }
+
+        private static void CanonicalizePair(ref int a, ref int b)
+        {
+            if (b < 0) return;
+            if (b < a) { int t = a; a = b; b = t; }
+        }
     }
 
-    /// <summary>ingredient entry</summary>
-    internal readonly struct Ingredient
+    internal readonly struct Ingredient : IEquatable<Ingredient>
     {
         public readonly int UnifiedIndex;
         public readonly int Count;
@@ -262,34 +385,21 @@ namespace CookBook
             Count = count;
         }
 
-        public bool IsItem => UnifiedIndex < ItemCatalog.itemCount;
+        public bool Equals(Ingredient other)
+            => UnifiedIndex == other.UnifiedIndex && Count == other.Count;
 
-        public ItemIndex ItemIndex => IsItem
-            ? (ItemIndex)UnifiedIndex
-            : ItemIndex.None;
-
-        public EquipmentIndex EquipIndex => IsItem
-            ? EquipmentIndex.None
-            : (EquipmentIndex)(UnifiedIndex - ItemCatalog.itemCount);
+        public override bool Equals(object obj)
+            => obj is Ingredient other && Equals(other);
 
         public override int GetHashCode()
         {
-            // Simple multiplicative hash
-            int hash = 17;
-            hash = hash * 31 + UnifiedIndex;
-            hash = hash * 31 + Count;
-            return hash;
-        }
-
-        public override bool Equals(object obj)
-        {
-            return obj is Ingredient other && Equals(other);
-        }
-
-        public bool Equals(Ingredient other)
-        {
-            return UnifiedIndex == other.UnifiedIndex &&
-                   Count == other.Count;
+            unchecked
+            {
+                int h = 17;
+                h = (h * 31) ^ UnifiedIndex;
+                h = (h * 31) ^ Count;
+                return h;
+            }
         }
     }
 
@@ -298,62 +408,53 @@ namespace CookBook
     {
         public int ResultIndex { get; }
         public int ResultCount { get; }
-        public Ingredient[] Ingredients { get; }
-        private readonly int _cachedHash;
 
-        public ChefRecipe(int resultIndex, int resultCount, Ingredient[] ingredients)
+        public readonly int IngA;
+        public readonly int IngB;
+
+        public readonly byte CountA;
+        public readonly byte CountB;
+        public bool HasB => CountB != 0;
+        public bool IsDouble => (IngA == IngB) && CountA >= 2;
+
+        public ChefRecipe(int resultIndex, int resultCount, int ingA, int ingB, byte countA, byte countB)
         {
             ResultIndex = resultIndex;
             ResultCount = resultCount;
-            Ingredients = ingredients;
-            _cachedHash = CalculateInitialHash();
+            IngA = ingA;
+            IngB = ingB;
+            CountA = countA;
+            CountB = countB;
         }
-
-        private int CalculateInitialHash()
-        {
-            unchecked
-            {
-                int hash = 17;
-                hash = hash * 31 + ResultIndex;
-                hash = hash * 31 + ResultCount;
-
-                if (Ingredients != null)
-                {
-                    var sortedHashes = Ingredients.Select(i => i.GetHashCode()).ToList();
-                    sortedHashes.Sort();
-
-                    foreach (var h in sortedHashes)
-                    {
-                        hash = hash * 31 + h;
-                    }
-                }
-                return hash;
-            }
-        }
-
-        public override int GetHashCode() => _cachedHash;
-        public override bool Equals(object obj) => obj is ChefRecipe other && Equals(other);
 
         public bool Equals(ChefRecipe other)
         {
-            if (ReferenceEquals(null, other)) return false;
+            if (ReferenceEquals(other, null)) return false;
             if (ReferenceEquals(this, other)) return true;
 
-            if (_cachedHash != other._cachedHash) return false;
-
-            if (ResultIndex != other.ResultIndex || ResultCount != other.ResultCount) return false;
-            if (Ingredients.Length != other.Ingredients.Length) return false;
-
-            var thisIng = Ingredients.OrderBy(i => i.UnifiedIndex).ToArray();
-            var otherIng = other.Ingredients.OrderBy(i => i.UnifiedIndex).ToArray();
-
-            for (int i = 0; i < thisIng.Length; i++)
-            {
-                if (!thisIng[i].Equals(otherIng[i])) return false;
-            }
-
-            return true;
+            return ResultIndex == other.ResultIndex
+                && ResultCount == other.ResultCount
+                && IngA == other.IngA && IngB == other.IngB
+                && CountA == other.CountA && CountB == other.CountB;
         }
 
+        public override bool Equals(object obj) => obj is ChefRecipe other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int h = 17;
+                h = (h * 31) ^ ResultIndex;
+                h = (h * 31) ^ ResultCount;
+
+                h = (h * 31) ^ IngA;
+                h = (h * 31) ^ IngB;
+
+                h = (h * 31) ^ CountA;
+                h = (h * 31) ^ CountB;
+                return h;
+            }
+        }
     }
 }

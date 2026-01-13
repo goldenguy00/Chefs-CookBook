@@ -6,6 +6,9 @@
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<BaseOutputPath>C:\Users\logan\Desktop\Personal Projects\LBurnsUF\Chefs-CookBook</BaseOutputPath>
 	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+		<DefineConstants>$(DefineConstants);COOKBOOK_PERF</DefineConstants>
+	</PropertyGroup>
 
 	<ItemGroup>
 		<Compile Include="ChatNetworkHandler.cs" />
@@ -16,6 +19,7 @@
 		<Compile Include="DialogueHooks.cs" />
 		<Compile Include="InventoryTracker.cs" />
 		<Compile Include="Log.cs" />
+		<Compile Include="PerfProfile.cs" />
 		<Compile Include="Plugin.cs" />
 		<Compile Include="RecipeFilter.cs" />
 		<Compile Include="RecipeProvider.cs" />

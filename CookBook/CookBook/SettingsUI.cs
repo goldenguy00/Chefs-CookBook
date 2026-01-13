@@ -23,7 +23,7 @@ namespace CookBook
             ModSettingsManager.AddOption(new KeyBindOption(CookBook.AbortKey));
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.ShowCorruptedResults));
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.DebugMode));
-
+            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.LogCraftMode));
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.AllowMultiplayerPooling));
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.ConsiderDrones));
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxDepth, new IntSliderConfig
@@ -38,6 +38,18 @@ namespace CookBook
             {
                 min = 1,
                 max = 100,
+                formatString = "{0}"
+            }));
+            ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxBridgeItemsPerChain, new IntSliderConfig
+            {
+                min = 1,
+                max = 100,
+                formatString = "{0}"
+            }));
+            ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxProducersPerBridge, new IntSliderConfig
+            {
+                min = 1,
+                max = 20,
                 formatString = "{0}"
             }));
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.ComputeThrottleMs, new IntSliderConfig

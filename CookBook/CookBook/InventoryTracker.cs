@@ -1,7 +1,9 @@
 ﻿using BepInEx.Logging;
 using RoR2;
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
 using UnityEngine;
 namespace CookBook
@@ -14,7 +16,6 @@ namespace CookBook
         // ---------------------- Fields  ----------------------------
         private static ManualLogSource _log;
         private static bool _initialized;
-        private static bool _enabled;
 
         private static bool _dronesDirty = true;
         private static bool _itemsDirty = true;
@@ -23,31 +24,41 @@ namespace CookBook
         private static bool _hasSnapshot = false;
         private static bool _canScrapDrones = false;
         private static bool _isTransitioning = false;
+        private static bool _hooksInstalled;
+        private static bool _active;
+        private static bool _forceRebuildPending;
 
         private static Inventory _localInventory;
-        private static InventorySnapshot _snapshot;
 
         private static int[] _cachedLocalPhysical;
         private static readonly Dictionary<Inventory, int[]> _cachedAlliedPhysical = new();
         private static int[] _cachedGlobalDronePotential;
 
-        private static readonly HashSet<int> _changedIndices = new();
-        private static HashSet<ItemIndex> _lastCorruptedIndices = new HashSet<ItemIndex>();
-        private static readonly Dictionary<NetworkUser, int> _lastTradeCounts = new();
+        private static readonly HashSet<Inventory> _liveAlliedInvScratch = new();
+        private static readonly List<Inventory> _pruneAlliedInvScratch = new();
 
-        internal static void TradesDirty() => _tradeDirty = true;
-        internal static void DronesDirty() => _dronesDirty = true;
-        internal static void ItemsDirty() => _itemsDirty = true;
-        internal static bool DroneScrapperPresent() => _canScrapDrones;
-
-        // Events
-        /// <summary>
-        /// Fires when the combined (Physical + Drone) inventory changes.
-        /// </summary>
-        internal static event Action<int[], HashSet<int>> OnInventoryChangedWithIndices;
+        private static InventorySnapshot _snapshot;
+        private static Dictionary<NetworkUser, int[]> _snapshotAlliedPhysicalStacks;
+        private static Dictionary<NetworkUser, int> _snapshotTradesRemaining;
 
         private static readonly Dictionary<ItemTier, ItemIndex> _tierToScrapItemIdx = new();
         private static readonly Dictionary<int, List<DroneCandidate>> _globalScrapCandidates = new();
+
+        private static HashSet<ItemIndex> _lastCorruptedIndices = new HashSet<ItemIndex>();
+        private static readonly HashSet<ItemIndex> _corruptedScratch = new();
+
+        private const float SnapshotDebounceSeconds = 0.15f;
+
+        private static DebounceRunner _runner;
+        private static Coroutine _pendingEmit;
+        private static readonly HashSet<int> _pendingChanged = new();
+        private static int[] _emitBuffer;
+
+        /// <summary>
+        /// Fires when the combined inventory changes.
+        /// </summary>
+        internal static event Action<InventorySnapshot, int[], int, bool> OnSnapshotChanged;
+
         // ---------------------- Initialization  ----------------------------
         internal static void Init(ManualLogSource log)
         {
@@ -57,6 +68,7 @@ namespace CookBook
             _log = log;
 
             TradeTracker.Init();
+            TradeTracker.OnTradeCountsChanged += OnTradeCountsChanged;
             PickupCatalog.availability.CallWhenAvailable(BuildScrapLookup);
         }
 
@@ -78,15 +90,44 @@ namespace CookBook
         }
 
         //--------------------------------------- Status Control ----------------------------------------
-        /// <summary>
-        /// Refreshes binding and begins tracking localuser inventory.
-        /// </summary>
-        internal static void Enable()
+        internal static void Start()
         {
-            if (_enabled) return;
-            _enabled = true;
+            if (_hooksInstalled) return;
+            _hooksInstalled = true;
+            CookBook.AllowMultiplayerPooling.SettingChanged += OnPoolingSettingChanged;
+            CookBook.ConsiderDrones.SettingChanged += OnConsiderDronesChanged;
+            CharacterBody.onBodyStartGlobal += OnBodyStart;
+            CharacterBody.onBodyDestroyGlobal += OnBodyDestroyed;
+            MinionOwnership.onMinionGroupChangedGlobal += OnMinionGroupChanged;
+            Inventory.onInventoryChangedGlobal += OnGlobalInventoryChanged;
+            PlayerCharacterMasterController.onPlayerAdded += OnPlayerJoined;
+            PlayerCharacterMasterController.onPlayerRemoved += OnPlayerLeft;
+            Stage.onServerStageComplete += OnStageComplete;
+            Stage.onStageStartGlobal += OnStageStart;
+        }
+
+        internal static void Pause()
+        {
+            _active = false;
+
+            CancelPendingEmit();
+            _pendingChanged.Clear();
+
+            _localInventory = null;
+            _cachedLocalPhysical = null;
+            _cachedGlobalDronePotential = null;
+            _cachedAlliedPhysical.Clear();
+            _hasSnapshot = false;
+        }
+
+        internal static void Resume()
+        {
+            Start();
+            _active = true;
+
             _localInventory = null;
             _snapshot = default;
+            _hasSnapshot = false;
 
             _dronesDirty = true;
             _itemsDirty = true;
@@ -94,49 +135,58 @@ namespace CookBook
             _tradeDirty = true;
             _canScrapDrones = CanScrapDrones();
 
-            CharacterBody.onBodyStartGlobal += OnBodyStart;
-            MinionOwnership.onMinionGroupChangedGlobal += OnMinionGroupChanged;
-            Inventory.onInventoryChangedGlobal += OnGlobalInventoryChanged;
-            PlayerCharacterMasterController.onPlayerAdded += OnPlayerJoined;
-            PlayerCharacterMasterController.onPlayerRemoved += OnPlayerLeft;
-            Stage.onServerStageComplete += OnStageComplete;
-            Stage.onStageStartGlobal += OnStageStart;
-            CharacterBody.onBodyDestroyGlobal += OnBodyDestroyed;
+            _cachedAlliedPhysical.Clear();
+            _cachedLocalPhysical = null;
+            _cachedGlobalDronePotential = null;
+            _lastCorruptedIndices.Clear();
 
             if (CookBook.IsPoolingEnabled)
             {
                 foreach (var playerController in PlayerCharacterMasterController.instances)
                 {
-                    var netUser = playerController.networkUser;
-                    if (!netUser || netUser.localUser != null) continue;
-                    var inv = playerController.master?.inventory;
-                    if (inv != null) _cachedAlliedPhysical[inv] = GetUnifiedStacksFor(inv);
+                    RefreshAlliedPhysicalCache(pruneStale: false);
                 }
             }
 
-            if (TryBindFromExistingBodies()) CharacterBody.onBodyStartGlobal -= OnBodyStart;
+            TryBindFromExistingBodies();
+            if (_localInventory != null)
+            {
+                int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
+                for (int i = 0; i < totalLen; i++) _pendingChanged.Add(i);
+
+                _itemsDirty = true;
+                _dronesDirty = true;
+                _remoteItemsDirty = true;
+                _tradeDirty = true;
+
+                MarkForceRebuild();
+                QueueEmit("Resume");
+            }
         }
 
         /// <summary>
         /// Unsubscribes to character events and inventory changes, clears all cached data, 
         /// and drains the snapshot to avoid stale reads.
         /// </summary>
-        internal static void Disable()
+        internal static void Shutdown()
         {
-            if (!_enabled) return;
-            _enabled = false;
+            if (!_hooksInstalled) return;
+            _hooksInstalled = false;
+            _active = false;
 
             CharacterBody.onBodyStartGlobal -= OnBodyStart;
+            CharacterBody.onBodyDestroyGlobal -= OnBodyDestroyed;
             MinionOwnership.onMinionGroupChangedGlobal -= OnMinionGroupChanged;
             Inventory.onInventoryChangedGlobal -= OnGlobalInventoryChanged;
             PlayerCharacterMasterController.onPlayerAdded -= OnPlayerJoined;
             PlayerCharacterMasterController.onPlayerRemoved -= OnPlayerLeft;
             Stage.onServerStageComplete -= OnStageComplete;
             Stage.onStageStartGlobal -= OnStageStart;
-            CharacterBody.onBodyDestroyGlobal -= OnBodyDestroyed;
+            TradeTracker.OnTradeCountsChanged -= OnTradeCountsChanged;
+            CookBook.AllowMultiplayerPooling.SettingChanged -= OnPoolingSettingChanged;
+            CookBook.ConsiderDrones.SettingChanged -= OnConsiderDronesChanged;
 
             _cachedAlliedPhysical.Clear();
-            _lastTradeCounts.Clear();
             _localInventory = null;
             _cachedLocalPhysical = null;
             _cachedGlobalDronePotential = null;
@@ -146,174 +196,361 @@ namespace CookBook
         }
 
         //--------------------------------------- Event Logic ----------------------------------------
+        private static void OnPoolingSettingChanged(object sender, EventArgs e)
+        {
+            if (!_active) return;
+
+            bool poolingEnabled = CookBook.IsPoolingEnabled;
+
+            _cachedAlliedPhysical.Clear();
+            _snapshotAlliedPhysicalStacks = null;
+            _snapshotTradesRemaining = null;
+
+            if (poolingEnabled)
+            {
+                RefreshAlliedPhysicalCache(pruneStale: false);
+            }
+
+            _remoteItemsDirty = true;
+            _tradeDirty = true;
+
+            MarkForceRebuild();
+            QueueEmit("OnPoolingSettingChanged");
+        }
+
+        internal static void OnConsiderDronesChanged(object sender, EventArgs e)
+        {
+            if (!_active) return;
+
+            bool droneFeatureEnabled = CookBook.IsDroneScrappingEnabled;
+            foreach (var kvp in _tierToScrapItemIdx)
+            {
+                int idx = (int)kvp.Value;
+                if (idx >= 0) _pendingChanged.Add(idx);
+            }
+
+            _dronesDirty = true;
+            MarkForceRebuild();
+            QueueEmit("OnConsiderDronesChanged");
+        }
+
+        private static void OnTradeCountsChanged(IReadOnlyCollection<NetworkUser> changedUsers, bool forceRebuild)
+        {
+            if (!_active) return;
+
+            _tradeDirty = true;
+            _forceRebuildPending |= forceRebuild;
+
+            QueueEmit("OnTradeCountsChanged");
+        }
+
         private static void OnStageComplete(Stage stage) => _isTransitioning = true;
         private static void OnStageStart(Stage stage) => _isTransitioning = false;
+
         private static void OnGlobalInventoryChanged(Inventory inv)
         {
-            if (!_enabled || inv == null) return;
+            if (!_active || !inv) return;
 
-            int[] currentStacks = GetUnifiedStacksFor(inv);
+            if (!IsPlayerInventory(inv, out var pcmc))
+                return;
 
-            if (inv == _localInventory)
+            var user = pcmc.networkUser;
+            bool isLocal = user != null && user.isLocalPlayer;
+
+            if (isLocal)
             {
-                if (!HasPermanentChanges(_cachedLocalPhysical, currentStacks)) return;
+                int[] currentStacks = GetUnifiedStacksFor(inv);
 
-                _changedIndices.Clear();
+                if (!HasPermanentChanges(_cachedLocalPhysical, currentStacks))
+                    return;
+
                 if (_cachedLocalPhysical != null)
                 {
                     for (int i = 0; i < currentStacks.Length; i++)
-                        if (currentStacks[i] != _cachedLocalPhysical[i]) _changedIndices.Add(i);
+                        if (currentStacks[i] != _cachedLocalPhysical[i])
+                            _pendingChanged.Add(i);
+                }
+                else
+                {
+                    for (int i = 0; i < currentStacks.Length; i++)
+                        _pendingChanged.Add(i);
                 }
 
                 _cachedLocalPhysical = currentStacks;
                 _itemsDirty = true;
+
+                QueueEmit("OnGlobalInventoryChanged: item");
+                return;
             }
-            else if (CookBook.IsPoolingEnabled)
+
+            if (CookBook.IsPoolingEnabled && user != null)
             {
+                int[] currentStacks = GetUnifiedStacksFor(inv);
                 _cachedAlliedPhysical.TryGetValue(inv, out int[] oldStacks);
-                if (!HasPermanentChanges(oldStacks, currentStacks)) return;
+
+                if (!HasPermanentChanges(oldStacks, currentStacks))
+                    return;
 
                 if (oldStacks != null)
                 {
                     for (int i = 0; i < currentStacks.Length; i++)
-                        if (currentStacks[i] != oldStacks[i]) _changedIndices.Add(i);
+                        if (currentStacks[i] != oldStacks[i])
+                            _pendingChanged.Add(i);
                 }
                 else
                 {
-                    for (int i = 0; i < currentStacks.Length; i++) _changedIndices.Add(i);
+                    for (int i = 0; i < currentStacks.Length; i++)
+                        _pendingChanged.Add(i);
                 }
 
                 _cachedAlliedPhysical[inv] = currentStacks;
                 _remoteItemsDirty = true;
-            }
-            else return;
 
-            UpdateSnapshot();
+                QueueEmit("OnGlobalInventoryChanged");
+                return;
+            }
         }
 
         private static void OnMinionGroupChanged(MinionOwnership minion)
         {
-            if (!_enabled || minion == null || !minion.ownerMaster) return;
+            if (!_active || minion == null || !minion.ownerMaster) return;
+            if (!CookBook.IsDroneScrappingEnabled) return;
 
             CharacterMaster minionMaster = minion.GetComponent<CharacterMaster>();
             var minionBody = minionMaster?.GetBody();
             if (!minionBody) return;
 
             DroneIndex dIdx = DroneCatalog.GetDroneIndexFromBodyIndex(minionBody.bodyIndex);
-            DroneDef dDef = DroneCatalog.GetDroneDef(dIdx);
-
-            if (dDef == null || !dDef.canScrap) return;
-
-            CharacterMaster ownerMaster = minion.ownerMaster;
-            bool isRelevant = (ownerMaster == _localInventory?.GetComponent<CharacterMaster>());
-            if (!isRelevant && CookBook.IsPoolingEnabled)
-            {
-                isRelevant = _cachedAlliedPhysical.Keys.Any(inv => inv.GetComponent<CharacterMaster>() == ownerMaster);
-            }
-
-            if (isRelevant)
-            {
-                int scrapIdx = GetScrapIndexFromDrone(dIdx);
-                if (scrapIdx != -1) _changedIndices.Add(scrapIdx);
-
-                _dronesDirty = true;
-                UpdateSnapshot();
-            }
-        }
-
-        internal static void OnConsiderDronesChanged(object sender, EventArgs e)
-        {
-            _dronesDirty = true;
-            UpdateSnapshot();
+            MarkDroneScrapDirty(dIdx, "OnMinionGroupChanged");
         }
 
         private static void OnPlayerJoined(PlayerCharacterMasterController pmb)
         {
+            if (!_active) return;
+
             _remoteItemsDirty = true;
+            _tradeDirty = true;
+            MarkForceRebuild();
+            QueueEmit("OnPlayerJoined");
         }
 
         private static void OnPlayerLeft(PlayerCharacterMasterController pmb)
         {
-            if (pmb && pmb.master && pmb.master.inventory)
+            if (CookBook.IsPoolingEnabled)
             {
-                _cachedAlliedPhysical.Remove(pmb.master.inventory);
-                _remoteItemsDirty = true;
-                UpdateSnapshot();
+                RefreshAlliedPhysicalCache(pruneStale: true);
             }
         }
 
-        public static void TriggerUpdate() => UpdateSnapshot();
+        public static void TriggerUpdate()
+        {
+            if (!_active || _localInventory == null) return;
+
+            int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
+            for (int i = 0; i < totalLen; i++) _pendingChanged.Add(i);
+
+            _itemsDirty = true;
+            _dronesDirty = true;
+            _remoteItemsDirty = true;
+            _tradeDirty = true;
+
+            MarkForceRebuild();
+            QueueEmit("TriggerUpdate");
+        }
 
         //--------------------------------------- Snapshot Logic  ----------------------------------------
-        private static void UpdateSnapshot()
+        private static void EmitSnapshotNow()
         {
-            if (!_enabled || _localInventory == null) return;
-            _canScrapDrones = CanScrapDrones();
+            if (!_active || _localInventory == null) return;
 
+            if (!BuildSnapshotIfNeeded(out var snapshotBuilt))
+                return;
+
+            int count = _pendingChanged.Count;
+            if (_emitBuffer == null || _emitBuffer.Length < count)
+                _emitBuffer = new int[Math.Max(count, (_emitBuffer?.Length ?? 0) * 2 + 16)];
+
+            int i = 0;
+            foreach (var idx in _pendingChanged) _emitBuffer[i++] = idx;
+
+            _pendingChanged.Clear();
+
+            bool forceRebuild = _forceRebuildPending;
+            _forceRebuildPending = false;
+
+            DebugLog.Trace(_log, "Inventory Snapshot Completed, handing to Craftplanner.");
+            OnSnapshotChanged?.Invoke(_snapshot, _emitBuffer, count, forceRebuild);
+        }
+
+        private static bool BuildSnapshotIfNeeded(out bool built)
+        {
+            built = false;
+            if (_dronesDirty) _canScrapDrones = CanScrapDrones();
+
+            bool poolingIsEnabled = CookBook.IsPoolingEnabled;
+            bool canScrapDrones = _canScrapDrones;
             bool dronesWereDirty = _dronesDirty;
             bool remoteWasDirty = _remoteItemsDirty;
-            bool tradesWereDirty = CheckTradeAvailabilityChanged() || _tradeDirty;
+            bool tradesWereDirty = _tradeDirty;
+            bool pendingOnly = _pendingChanged.Count > 0 || _forceRebuildPending;
+            int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
 
-            HashSet<ItemIndex> currentCorrupted = new HashSet<ItemIndex>();
+            // ---------------- Corrupted items ----------------
+            _corruptedScratch.Clear();
             foreach (var info in RoR2.Items.ContagiousItemManager.transformationInfos)
             {
                 if (_localInventory.GetItemCountPermanent(info.transformedItem) > 0)
                 {
-                    currentCorrupted.Add(info.originalItem);
+                    _corruptedScratch.Add(info.originalItem);
                 }
             }
 
-            if (!currentCorrupted.SetEquals(_lastCorruptedIndices))
+            if (!_corruptedScratch.SetEquals(_lastCorruptedIndices))
             {
                 _itemsDirty = true;
-                _lastCorruptedIndices = currentCorrupted;
+                _lastCorruptedIndices = new HashSet<ItemIndex>(_corruptedScratch);
             }
 
-            if (!_itemsDirty && !dronesWereDirty && !remoteWasDirty && !tradesWereDirty && _hasSnapshot) return;
+            if (!_itemsDirty && !dronesWereDirty && !remoteWasDirty && !tradesWereDirty && _hasSnapshot && !pendingOnly)
+                return false;
 
-            int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
-
+            // ---------------- Drones ----------------
             if (dronesWereDirty || _cachedGlobalDronePotential == null)
             {
                 _globalScrapCandidates.Clear();
                 _cachedGlobalDronePotential = new int[totalLen];
 
-                if (CookBook.ConsiderDrones.Value)
+                if (canScrapDrones)
                 {
-                    AccumulateGlobalDrones(GetLocalUser()?.currentNetworkUser, _cachedGlobalDronePotential);
-
-                    if (CookBook.IsPoolingEnabled)
+                    foreach (var pcmc in PlayerCharacterMasterController.instances)
                     {
-                        foreach (var playerController in PlayerCharacterMasterController.instances)
+                        var netUser = pcmc.networkUser;
+                        if (!netUser) continue;
+                        AccumulateGlobalDrones(netUser, _cachedGlobalDronePotential);
+                    }
+
+                    if (_globalScrapCandidates.Count > 0)
+                    {
+                        var localNetUser = GetLocalUser()?.currentNetworkUser;
+                        foreach (var tierList in _globalScrapCandidates.Values)
                         {
-                            var netUser = playerController.networkUser;
-                            if (!netUser || netUser.localUser == GetLocalUser()) continue;
-                            AccumulateGlobalDrones(netUser, _cachedGlobalDronePotential);
+                            tierList.Sort((a, b) =>
+                            {
+                                int costComparison = a.UpgradeCount.CompareTo(b.UpgradeCount);
+                                if (costComparison != 0) return costComparison;
+
+                                bool aLocal = a.Owner == localNetUser;
+                                bool bLocal = b.Owner == localNetUser;
+                                if (aLocal != bLocal) return aLocal ? -1 : 1;
+
+                                string nameA = DroneCatalog.GetDroneDef(a.DroneIdx)?.nameToken ?? string.Empty;
+                                string nameB = DroneCatalog.GetDroneDef(b.DroneIdx)?.nameToken ?? string.Empty;
+                                return string.Compare(nameA, nameB, StringComparison.Ordinal);
+                            });
                         }
                     }
                 }
                 _dronesDirty = false;
             }
 
-            int[] localClone = (int[])_cachedLocalPhysical.Clone();
+            // ---------------- Physical stacks ----------------
+            int[] physical = (_cachedLocalPhysical != null)
+                ? (int[])_cachedLocalPhysical.Clone()
+                : new int[totalLen];
 
             foreach (var itemIdx in _lastCorruptedIndices)
             {
                 int idx = (int)itemIdx;
-                if (idx >= 0 && idx < localClone.Length)
-                {
-                    localClone[idx] = 0;
-                }
+                if ((uint)idx < (uint)physical.Length)
+                    physical[idx] = 0;
             }
 
+            // ---------------- Drone stacks ----------------
+            int[] drone = (_cachedGlobalDronePotential != null)
+                ? (int[])_cachedGlobalDronePotential.Clone()
+                : Array.Empty<int>();
+
+            // ---------------- Masks ----------------
+            ulong[] physMask = GenerateMask(physical, totalLen);
+            ulong[] droneMask = GenerateMask(drone, totalLen);
+
+
+            // ---------------- Copy candidates ----------------
+            Dictionary<int, List<DroneCandidate>> candidatesCopy;
+            if (_globalScrapCandidates.Count == 0)
+            {
+                candidatesCopy = new Dictionary<int, List<DroneCandidate>>();
+            }
+            else
+            {
+                candidatesCopy = _globalScrapCandidates.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new List<DroneCandidate>(kvp.Value)
+                );
+            }
+
+            // ---------------- Allied stacks + remaining trades ----------------
+            Dictionary<NetworkUser, int[]> alliedPhysicalStacks = null;
+            Dictionary<NetworkUser, int> remainingTrades = null;
+
+            if (poolingIsEnabled)
+            {
+                if (remoteWasDirty || tradesWereDirty || _snapshotAlliedPhysicalStacks == null || _snapshotTradesRemaining == null)
+                {
+                    _snapshotAlliedPhysicalStacks = new Dictionary<NetworkUser, int[]>();
+                    _snapshotTradesRemaining = new Dictionary<NetworkUser, int>();
+
+                    var localUser = GetLocalUser();
+
+                    RefreshAlliedPhysicalCache(pruneStale: true);
+
+                    foreach (var pcmc in PlayerCharacterMasterController.instances)
+                    {
+                        if (!pcmc) continue;
+
+                        var netUser = pcmc.networkUser;
+                        if (!netUser) continue;
+                        if (netUser.localUser == localUser) continue;
+
+                        var inv = pcmc.master ? pcmc.master.inventory : null;
+                        if (!inv) continue;
+
+                        int tradesLeft = TradeTracker.GetRemainingTrades(netUser);
+                        if (tradesLeft <= 0) continue;
+
+                        if (_cachedAlliedPhysical.TryGetValue(inv, out int[] cachedStacks) && cachedStacks != null)
+                        {
+                            _snapshotAlliedPhysicalStacks[netUser] = (int[])cachedStacks.Clone();
+                            _snapshotTradesRemaining[netUser] = tradesLeft;
+                        }
+                    }
+                }
+                alliedPhysicalStacks = _snapshotAlliedPhysicalStacks;
+                remainingTrades = _snapshotTradesRemaining;
+            }
+            else
+            {
+                _snapshotAlliedPhysicalStacks = null;
+                _snapshotTradesRemaining = null;
+            }
+
+            // ---------------- Filtered recipes ----------------
+            var filteredRecipes = RecipeProvider.GetFilteredRecipes(_lastCorruptedIndices) ?? new List<ChefRecipe>();
+
+            // ---------------- Build snapshot ----------------
             _snapshot = new InventorySnapshot(
-                localClone,
-                (int[])_cachedGlobalDronePotential.Clone(),
-                (int[])localClone.Clone(),
-                _globalScrapCandidates.ToDictionary(kvp => kvp.Key, kvp => new List<DroneCandidate>(kvp.Value)),
+                physical,
+                drone,
+                candidatesCopy,
                 _lastCorruptedIndices,
-                _canScrapDrones,
-                RecipeProvider.GetFilteredRecipes(_lastCorruptedIndices) ?? new List<ChefRecipe>()
+                canScrapDrones,
+                poolingIsEnabled,
+                CookBook.DepthLimit,
+                filteredRecipes,
+                physMask,
+                droneMask,
+                alliedPhysicalStacks,
+                remainingTrades
             );
 
             _hasSnapshot = true;
@@ -321,15 +558,18 @@ namespace CookBook
             _remoteItemsDirty = false;
             _tradeDirty = false;
 
-            OnInventoryChangedWithIndices?.Invoke((int[])localClone.Clone(), new HashSet<int>(_changedIndices));
-            _changedIndices.Clear();
+            built = true;
+            return true;
         }
 
         private static void AccumulateGlobalDrones(NetworkUser user, int[] globalPotentialBuffer)
         {
             if (!user || !user.master) return;
 
-            var minions = CharacterBody.readOnlyInstancesList.Where(b => b.master && b.master.minionOwnership.ownerMaster == user.master);
+            var minions = CharacterBody.readOnlyInstancesList.Where(b =>
+                b?.master &&
+                b.master.minionOwnership &&
+                b.master.minionOwnership.ownerMaster == user.master);
 
             foreach (var minionBody in minions)
             {
@@ -343,7 +583,7 @@ namespace CookBook
                     int scrapIdx = MapTierToScrapIndex(droneDef.tier);
                     if (scrapIdx != -1)
                     {
-                        int upgradeCount = minionBody.inventory ? minionBody.inventory.GetItemCountPermanent(DLC3Content.Items.DroneUpgradeHidden) : 0;
+                        int upgradeCount = minionBody.inventory.GetItemCountEffective(DLC3Content.Items.DroneUpgradeHidden);
 
                         globalPotentialBuffer[scrapIdx] += DroneUpgradeUtils.GetDroneCountFromUpgradeCount(upgradeCount);
 
@@ -357,30 +597,43 @@ namespace CookBook
                         {
                             Owner = user,
                             DroneIdx = droneIdx,
-                            UpgradeCount = upgradeCount
+                            UpgradeCount = upgradeCount,
+                            MinionMasterNetId = MakeOwnerScopedMinionKey(minionBody)
                         });
                     }
                 }
             }
+        }
 
-            var localUser = GetLocalUser()?.currentNetworkUser;
-            foreach (var tierList in _globalScrapCandidates.Values)
-            {
-                tierList.Sort((a, b) =>
-                {
-                    int costComparison = a.UpgradeCount.CompareTo(b.UpgradeCount);
-                    if (costComparison != 0) return costComparison;
+        static ulong MakeOwnerScopedMinionKey(CharacterBody minionBody)
+        {
+            uint ownerId = GetOwnerMasterId(minionBody);
+            uint minionId = GetMinionInstanceId(minionBody);
 
-                    bool aLocal = a.Owner == localUser;
-                    bool bLocal = b.Owner == localUser;
-                    if (aLocal != bLocal) return aLocal ? -1 : 1;
+            return ((ulong)ownerId << 32) | (ulong)minionId;
+        }
 
-                    string nameA = DroneCatalog.GetDroneDef(a.DroneIdx)?.nameToken ?? string.Empty;
-                    string nameB = DroneCatalog.GetDroneDef(b.DroneIdx)?.nameToken ?? string.Empty;
+        static uint GetOwnerMasterId(CharacterBody minionBody)
+        {
+            var ownerMaster = minionBody?.master?.minionOwnership?.ownerMaster;
+            if (ownerMaster) return ownerMaster.netId.Value;
 
-                    return string.Compare(nameA, nameB, StringComparison.Ordinal);
-                });
-            }
+            var ownerBody = minionBody?.GetOwnerBody();
+            if (ownerBody?.master) return ownerBody.master.netId.Value;
+
+            return 0u;
+        }
+
+        static uint GetMinionInstanceId(CharacterBody minionBody)
+        {
+            if (!minionBody) return 0u;
+
+            uint id = minionBody.netId.Value;
+
+            if (id == 0u)
+                id = unchecked((uint)minionBody.GetInstanceID());
+
+            return id;
         }
 
         private static bool HasPermanentChanges(int[] oldStacks, int[] newStacks)
@@ -398,96 +651,82 @@ namespace CookBook
             return false;
         }
 
-        private static bool CheckTradeAvailabilityChanged()
+        private static bool IsPlayerInventory(Inventory inv, out PlayerCharacterMasterController pcmc)
         {
-            bool changed = false;
-            if (!CookBook.AllowMultiplayerPooling.Value) return false;
+            pcmc = null;
+            if (!inv) return false;
 
-            foreach (var playerController in PlayerCharacterMasterController.instances)
-            {
-                var netUser = playerController.networkUser;
-                if (!netUser || netUser.localUser == GetLocalUser()) continue;
+            // Inventory is a component on the master object.
+            var master = inv.GetComponent<CharacterMaster>();
+            if (!master) return false;
 
-                int currentTrades = TradeTracker.GetRemainingTrades(netUser);
-                _lastTradeCounts.TryGetValue(netUser, out int lastTrades);
-
-                if (currentTrades != lastTrades)
-                {
-                    _lastTradeCounts[netUser] = currentTrades;
-                    changed = true;
-                }
-            }
-            return changed;
+            // This is the discriminator: only real players have PCMC.
+            pcmc = master.playerCharacterMasterController;
+            return pcmc != null;
         }
+
 
         /// <summary>
         /// Binds to localuser when body is spawned, ignoring other bodies.
         /// </summary>
         private static void OnBodyStart(CharacterBody body)
         {
-            if (!_enabled || body == null) return;
+            if (!_active || body == null) return;
 
             var networkUser = body.master?.playerCharacterMasterController?.networkUser;
             if (networkUser && networkUser.localUser == GetLocalUser())
             {
                 RebindLocal(body.inventory);
                 _cachedLocalPhysical = GetUnifiedStacksFor(body.inventory);
-                UpdateSnapshot();
+
+                int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
+                for (int i = 0; i < totalLen; i++) _pendingChanged.Add(i);
+
+                _itemsDirty = true;
+                _dronesDirty = true;
+                _remoteItemsDirty = true;
+                _tradeDirty = true;
+                MarkForceRebuild();
+                QueueEmit("OnBodyStart");
             }
+
+            if (!CookBook.IsDroneScrappingEnabled) return;
 
             DroneIndex dIdx = DroneCatalog.GetDroneIndexFromBodyIndex(body.bodyIndex);
-            if (dIdx != DroneIndex.None)
-            {
-                DroneDef dDef = DroneCatalog.GetDroneDef(dIdx);
-                if (dDef == null || !dDef.canScrap) return;
-
-                CharacterMaster ownerMaster = body.master?.minionOwnership?.ownerMaster;
-                if (ownerMaster)
-                {
-                    bool isRelevant = (ownerMaster == _localInventory?.GetComponent<CharacterMaster>());
-                    if (!isRelevant && CookBook.IsPoolingEnabled)
-                    {
-                        isRelevant = _cachedAlliedPhysical.Keys.Any(inv => inv.GetComponent<CharacterMaster>() == ownerMaster);
-                    }
-
-                    if (isRelevant)
-                    {
-                        _dronesDirty = true;
-                        int scrapIdx = GetScrapIndexFromDrone(dIdx);
-                        if (scrapIdx != -1) _changedIndices.Add(scrapIdx);
-                        UpdateSnapshot();
-                    }
-                }
-            }
+            MarkDroneScrapDirty(dIdx, "Drone OnBodyStart");
         }
 
         private static void OnBodyDestroyed(CharacterBody body)
         {
-            if (!_enabled || _isTransitioning || body == null) return;
+            if (!_active || _isTransitioning || body == null) return;
 
-            DroneIndex dIdx = DroneCatalog.GetDroneIndexFromBodyIndex(body.bodyIndex);
-            if (dIdx == DroneIndex.None) return;
-
-            DroneDef dDef = DroneCatalog.GetDroneDef(dIdx);
-            if (dDef == null || !dDef.canScrap) return;
-
-            CharacterMaster ownerMaster = body.master?.minionOwnership?.ownerMaster;
-            if (!ownerMaster) return;
-
-            bool isRelevant = (ownerMaster == _localInventory?.GetComponent<CharacterMaster>());
-            if (!isRelevant && CookBook.IsPoolingEnabled)
+            if (CookBook.IsPoolingEnabled && IsPlayerBody(body, out var deadMaster))
             {
-                isRelevant = _cachedAlliedPhysical.Keys.Any(inv => inv.GetComponent<CharacterMaster>() == ownerMaster);
+                if (RemoveAlliedFromCache(deadMaster))
+                {
+                    _remoteItemsDirty = true;
+                    MarkForceRebuild();
+
+                    QueueEmit("OnBodyDestroyed: Removed allied cache");
+                }
             }
 
-            if (isRelevant)
+            if (CookBook.IsDroneScrappingEnabled)
             {
-                int scrapIdx = GetScrapIndexFromDrone(dIdx);
-                if (scrapIdx != -1) _changedIndices.Add(scrapIdx);
-
-                _dronesDirty = true;
-                UpdateSnapshot();
+                DroneIndex dIdx = DroneCatalog.GetDroneIndexFromBodyIndex(body.bodyIndex);
+                if (dIdx != DroneIndex.None)
+                {
+                    DroneDef dDef = DroneCatalog.GetDroneDef(dIdx);
+                    if (dDef != null && dDef.canScrap)
+                    {
+                        int scrapIdx = GetScrapIndexFromDrone(dIdx);
+                        if (scrapIdx != -1) _pendingChanged.Add(scrapIdx);
+                        _dronesDirty = true;
+                        QueueEmit("OnBodyDestroyed: Drone");
+                    }
+                }
             }
+
         }
 
         //----------------------------------- Binding Logic ----------------------------------
@@ -496,18 +735,42 @@ namespace CookBook
         {
             var localUser = GetLocalUser();
             if (localUser == null) return false;
-            foreach (var body in CharacterBody.readOnlyInstancesList)
+            foreach (var pcmc in PlayerCharacterMasterController.instances)
             {
-                if (body && body.inventory && body.master?.playerCharacterMasterController?.networkUser?.localUser == localUser)
-                {
-                    DebugLog.Trace(_log, $"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}.");
+                if (!pcmc) continue;
 
-                    RebindLocal(body.inventory);
-                    UpdateSnapshot();
-                    return true;
-                }
+                var netUser = pcmc.networkUser;
+                if (!netUser) continue;
+
+                if (netUser.localUser != localUser) continue;
+
+                var master = pcmc.master;
+                var inv = master?.inventory;
+                if (!inv) break;
+
+                var body = master.GetBody();
+
+                DebugLog.Trace(_log, body
+                        ? $"InventoryTracker.TryBindFromExistingBodies(): late binding to body {body.name}."
+                        : "InventoryTracker.TryBindFromExistingBodies(): late binding to local master (body not available)."
+                );
+
+                RebindLocal(inv);
+                _cachedLocalPhysical = GetUnifiedStacksFor(inv);
+
+                int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
+                for (int i = 0; i < totalLen; i++) _pendingChanged.Add(i);
+
+                _itemsDirty = true;
+                _dronesDirty = true;
+                _remoteItemsDirty = true;
+                _tradeDirty = true;
+
+                MarkForceRebuild();
+                QueueEmit("TryBindFromExistingBodies");
+                return true;
             }
-            DebugLog.Trace(_log, "InventoryTracker.TryBindFromExistingBodies(): no matching local body found.");
+            DebugLog.Trace(_log, "InventoryTracker.TryBindFromExistingBodies(): no matching local PCMController found.");
             return false;
         }
 
@@ -517,8 +780,175 @@ namespace CookBook
         }
 
 
-
         //--------------------------------- Helpers ------------------------------------------
+        private static int RefreshAlliedPhysicalCache(bool pruneStale)
+        {
+            if (_cachedAlliedPhysical == null)
+                return 0;
+
+            var localUser = GetLocalUser();
+            int wrote = 0;
+
+            _liveAlliedInvScratch.Clear();
+
+            foreach (var pcmc in PlayerCharacterMasterController.instances)
+            {
+                if (!pcmc) continue;
+
+                var master = pcmc.master;
+                var inv = master ? master.inventory : null;
+                if (!inv) continue;
+
+                _liveAlliedInvScratch.Add(inv);
+            }
+
+            if (pruneStale && _cachedAlliedPhysical.Count > 0)
+            {
+                _pruneAlliedInvScratch.Clear();
+
+                foreach (var kvp in _cachedAlliedPhysical)
+                {
+                    var inv = kvp.Key;
+                    if (!inv || !_liveAlliedInvScratch.Contains(inv))
+                        _pruneAlliedInvScratch.Add(inv);
+                }
+
+                for (int i = 0; i < _pruneAlliedInvScratch.Count; i++)
+                    _cachedAlliedPhysical.Remove(_pruneAlliedInvScratch[i]);
+            }
+
+            foreach (var pcmc in PlayerCharacterMasterController.instances)
+            {
+                if (!pcmc) continue;
+
+                var netUser = pcmc.networkUser;
+                if (!netUser) continue;
+
+                if (localUser != null && netUser.localUser == localUser)
+                    continue;
+
+                var master = pcmc.master;
+                var inv = master ? master.inventory : null;
+                if (!inv) continue;
+
+                _cachedAlliedPhysical[inv] = GetUnifiedStacksFor(inv);
+                wrote++;
+            }
+
+            return wrote;
+        }
+
+        private static bool RemoveAlliedFromCache(CharacterMaster ownerMaster)
+        {
+            if (!ownerMaster) return false;
+
+            // if we lose our local inventory, clear local caches
+            if (ownerMaster == _localInventory?.GetComponent<CharacterMaster>())
+            {
+                _localInventory = null;
+                _cachedLocalPhysical = null;
+                _itemsDirty = true;
+                return false;
+            }
+
+            bool removedAny = false;
+
+            if (_cachedAlliedPhysical != null && _cachedAlliedPhysical.Count > 0)
+            {
+                Inventory toRemove = null;
+
+                foreach (var kvp in _cachedAlliedPhysical)
+                {
+                    var inv = kvp.Key;
+                    if (!inv) continue;
+
+                    var m = inv.GetComponent<CharacterMaster>();
+                    if (m == ownerMaster)
+                    {
+                        toRemove = inv;
+                        break;
+                    }
+                }
+
+                if (toRemove)
+                {
+                    removedAny |= _cachedAlliedPhysical.Remove(toRemove);
+                }
+            }
+
+            return removedAny;
+        }
+
+        private static bool IsPlayerBody(CharacterBody body, out CharacterMaster master)
+        {
+            master = body ? body.master : null;
+            if (!master) return false;
+
+            if (master.playerCharacterMasterController != null)
+                return true;
+
+            if (master.playerCharacterMasterController?.networkUser != null)
+                return true;
+
+            return false;
+        }
+
+        private static void MarkDroneScrapDirty(DroneIndex dIdx, string reason)
+        {
+            if (!CookBook.IsDroneScrappingEnabled) return;
+            if (dIdx == DroneIndex.None) return;
+
+            DroneDef dDef = DroneCatalog.GetDroneDef(dIdx);
+            if (dDef == null || !dDef.canScrap) return;
+
+            int scrapIdx = GetScrapIndexFromDrone(dIdx);
+            if (scrapIdx != -1)
+                _pendingChanged.Add(scrapIdx);
+
+            _dronesDirty = true;
+            QueueEmit(reason);
+        }
+
+        private static void MarkForceRebuild()
+        {
+            _forceRebuildPending = true;
+        }
+
+        private static void EnsureRunner()
+        {
+            if (_runner) return;
+            var go = new GameObject("CookBook.InventoryTrackerRunner");
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            _runner = go.AddComponent<DebounceRunner>();
+        }
+
+        private static void CancelPendingEmit()
+        {
+            if (_pendingEmit != null && _runner)
+            {
+                _runner.StopCoroutine(_pendingEmit);
+                _pendingEmit = null;
+            }
+        }
+
+        private static void QueueEmit(string trigger)
+        {
+            if (!_active || _localInventory == null) return;
+
+            EnsureRunner();
+            CancelPendingEmit();
+
+            DebugLog.Trace(_log, $"Rebuild queued ({trigger})");
+            _pendingEmit = _runner.StartCoroutine(EmitAfterDelay());
+        }
+
+        private static IEnumerator EmitAfterDelay()
+        {
+            yield return new WaitForSecondsRealtime(SnapshotDebounceSeconds);
+            _pendingEmit = null;
+            EmitSnapshotNow();
+        }
+
         internal static int GetVisualResultIndex(int unifiedIndex)
         {
             if (unifiedIndex >= ItemCatalog.itemCount) return -1;
@@ -557,12 +987,15 @@ namespace CookBook
             if (_tierToScrapItemIdx.TryGetValue(tier, out var index)) return (int)index;
             return -1;
         }
+
         private static LocalUser GetLocalUser()
         {
             var list = LocalUserManager.readOnlyLocalUsersList;
             return list.Count > 0 ? list[0] : null;
         }
+
         internal static InventorySnapshot GetSnapshot() => _snapshot;
+
         private static int[] GetUnifiedStacksFor(Inventory inv)
         {
             int itemLen = ItemCatalog.itemCount;
@@ -587,15 +1020,7 @@ namespace CookBook
             }
             return stacks;
         }
-        /// <summary>
-        /// Returns all valid drones for a scrap tier.
-        /// </summary>
-        internal static List<DroneCandidate> GetScrapCandidates(int scrapIdx)
-        {
-            if (_snapshot.AllScrapCandidates != null && _snapshot.AllScrapCandidates.TryGetValue(scrapIdx, out var list))
-                return list;
-            return null;
-        }
+
         internal static int GetScrapIndexFromDrone(DroneIndex droneIdx)
         {
             DroneDef dDef = DroneCatalog.GetDroneDef(droneIdx);
@@ -605,74 +1030,71 @@ namespace CookBook
             }
             return -1;
         }
-        internal static int GetPhysicalCount(int index) => (_snapshot.PhysicalStacks != null && index < _snapshot.PhysicalStacks.Length) ? _snapshot.PhysicalStacks[index] : 0;
-        internal static int GetGlobalDronePotentialCount(int index) => (_snapshot.DronePotential != null && index < _snapshot.DronePotential.Length) ? _snapshot.DronePotential[index] : 0;
-        internal static int[] GetDronePotentialStacks() => (_snapshot.DronePotential != null) ? (int[])_snapshot.DronePotential.Clone() : Array.Empty<int>();
-        /// <summary>
-        /// Returns the aggregate stack (Local Items + Drones + Pooled Allied Items).
-        /// </summary>
-        internal static int[] GetUnifiedStacksCopy() => (_snapshot.TotalStacks != null) ? (int[])_snapshot.TotalStacks.Clone() : Array.Empty<int>();
-        /// <summary>
-        /// Returns only what the local player physically owns (Items + Equipment).
-        /// Used to determine if a TradeStep is actually required.
-        /// </summary>
-        internal static int[] GetLocalPhysicalStacks() => (_snapshot.PhysicalStacks != null) ? (int[])_snapshot.PhysicalStacks.Clone() : Array.Empty<int>();
-        /// <summary>
-        /// Provides the planner with specific snapshots of allied inventories.
-        /// </summary>
-        internal static Dictionary<NetworkUser, int[]> GetAlliedSnapshots()
+
+        private static ulong[] GenerateMask(int[] stacks, int bitCount)
         {
-            var alliedData = new Dictionary<NetworkUser, int[]>();
-            if (!CookBook.AllowMultiplayerPooling.Value) return alliedData;
+            int words = (bitCount + 63) >> 6;
+            ulong[] mask = new ulong[words];
+            if (stacks == null) return mask;
 
-            foreach (var pcmc in PlayerCharacterMasterController.instances)
-            {
-                var netUser = pcmc.networkUser;
-                if (!netUser || netUser.localUser != null) continue;
+            int n = Math.Min(stacks.Length, bitCount);
+            for (int i = 0; i < n; i++)
+                if (stacks[i] > 0)
+                    mask[i >> 6] |= 1UL << (i & 63);
 
-                var inv = pcmc.master?.inventory;
-                if (inv != null && _cachedAlliedPhysical.TryGetValue(inv, out int[] cachedStacks))
-                {
-                    if (TradeTracker.GetRemainingTrades(netUser) > 0)
-                    {
-                        alliedData[netUser] = (int[])cachedStacks.Clone();
-                    }
-                }
-            }
-            return alliedData;
+            return mask;
         }
+
+        private sealed class DebounceRunner : MonoBehaviour { }
     }
 
     //--------------------------------------- Structs  ----------------------------------------
     /// <summary>
     /// Immutable snapshot of the local player's inventory at a moment in time.
-    /// Contains Unified stacks (Items + Equipment flattened).
     /// </summary>
     internal readonly struct InventorySnapshot
     {
         public readonly int[] PhysicalStacks;
         public readonly int[] DronePotential;
-        public readonly int[] TotalStacks;
+        public readonly ulong[] PhysicalMask;
+        public readonly ulong[] DroneMask;
 
         public readonly Dictionary<int, List<DroneCandidate>> AllScrapCandidates;
         public readonly HashSet<ItemIndex> CorruptedIndices;
 
         public readonly bool CanScrapDrones;
+        public readonly bool IsPoolingEnabled;
+        public readonly int maxDepth;
         public readonly IReadOnlyList<ChefRecipe> FilteredRecipes;
 
-        public InventorySnapshot(int[] physical, int[] drone, int[] total,
-                             Dictionary<int, List<DroneCandidate>> allCandidates,
-                             HashSet<ItemIndex> corrupted,
-                             bool scrapperPresent,
-                             IReadOnlyList<ChefRecipe> filteredRecipes)
+        public readonly Dictionary<NetworkUser, int[]> AlliedPhysicalStacks;
+        public readonly Dictionary<NetworkUser, int> TradesRemaining;
+
+        public InventorySnapshot(
+            int[] physical,
+            int[] drone,
+            Dictionary<int, List<DroneCandidate>> allCandidates,
+            HashSet<ItemIndex> corrupted,
+            bool scrapperPresent,
+            bool poolingEnabled,
+            int maxdepth,
+            IReadOnlyList<ChefRecipe> filteredRecipes,
+            ulong[] physMask,
+            ulong[] droneMask,
+            Dictionary<NetworkUser, int[]> alliedPhysicalStacks,
+            Dictionary<NetworkUser, int> remainingTrades)
         {
             PhysicalStacks = physical ?? Array.Empty<int>();
             DronePotential = drone ?? Array.Empty<int>();
-            TotalStacks = total ?? Array.Empty<int>();
             AllScrapCandidates = allCandidates ?? new Dictionary<int, List<DroneCandidate>>();
             CorruptedIndices = corrupted ?? new HashSet<ItemIndex>();
-
+            PhysicalMask = physMask;
+            DroneMask = droneMask;
+            AlliedPhysicalStacks = alliedPhysicalStacks ?? new Dictionary<NetworkUser, int[]>();
+            TradesRemaining = remainingTrades ?? new Dictionary<NetworkUser, int>();
+            maxDepth = maxdepth;
             CanScrapDrones = scrapperPresent;
+            IsPoolingEnabled = poolingEnabled;
             FilteredRecipes = filteredRecipes ?? new List<ChefRecipe>();
         }
     }
@@ -681,5 +1103,6 @@ namespace CookBook
         public NetworkUser Owner;
         public DroneIndex DroneIdx;
         public int UpgradeCount;
+        public ulong MinionMasterNetId;
     }
 }

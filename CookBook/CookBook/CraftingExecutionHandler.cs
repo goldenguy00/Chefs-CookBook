@@ -2,7 +2,6 @@
 using RoR2;
 using System.Collections;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Linq;
 using UnityEngine;
 using static CookBook.CraftPlanner;
@@ -125,9 +124,9 @@ namespace CookBook
                     PickupIndex pi = GetPickupIndexFromUnified(req.UnifiedIndex);
 
                     int currentOwned = GetOwnedCount(PickupCatalog.GetPickupDef(pi), body);
-                    int tradeGoal = currentOwned + req.Count;
+                    int tradeGoal = currentOwned + req.TradesRequired;
 
-                    ChatNetworkHandler.SendObjectiveRequest(req.Donor, "TRADE", req.UnifiedIndex, req.Count);
+                    ChatNetworkHandler.SendObjectiveRequest(req.Donor, "TRADE", req.UnifiedIndex, req.TradesRequired);
 
                     string donorName = req.Donor?.userName ?? "Ally";
 
@@ -149,7 +148,6 @@ namespace CookBook
             int completedSteps = 0;
 
             StateController.BatchMode = true;
-
             while (craftQueue.Count > 0)
             {
                 if (CookBook.AbortKey.Value.IsPressed()) { Abort(); yield break; }
@@ -169,17 +167,16 @@ namespace CookBook
                     lastPickup = PickupIndex.none;
                 }
 
-                if (step.Ingredients != null)
+                if (step != null)
                 {
-                    foreach (var ing in step.Ingredients)
-                    {
-                        if (CookBook.AbortKey.Value.IsPressed()) { Abort(); yield break; }
+                    if (CookBook.AbortKey.Value.IsPressed()) { Abort(); yield break; }
+                    yield return EnsureIfEquipment(body, step.IngA, stepName);
+                    if (CookBook.AbortKey.Value.IsPressed()) { Abort(); yield break; }
 
-                        if (!ing.IsItem && ing.EquipIndex != EquipmentIndex.None)
-                        {
-                            SetObjectiveText($"Preparing {stepName}...");
-                            yield return EnsureEquipmentIsActive(body, ing.EquipIndex);
-                        }
+                    if (step.HasB)
+                    {
+                        yield return EnsureIfEquipment(body, step.IngB, stepName);
+                        if (CookBook.AbortKey.Value.IsPressed()) { Abort(); yield break; }
                     }
                 }
 
@@ -242,6 +239,27 @@ namespace CookBook
             Cleanup(closeUi: true);
         }
 
+        static IEnumerator EnsureIfEquipment(CharacterBody body, int unifiedIndex, string stepName)
+        {
+            if (CookBook.AbortKey.Value.IsPressed()) yield break;
+
+            int itemCount = ItemCatalog.itemCount;
+
+            if (unifiedIndex >= itemCount)
+            {
+                int equipRaw = unifiedIndex - itemCount;
+                if ((uint)equipRaw < (uint)EquipmentCatalog.equipmentCount)
+                {
+                    var equipIndex = (EquipmentIndex)equipRaw;
+                    if (equipIndex != EquipmentIndex.None)
+                    {
+                        SetObjectiveText($"Preparing {stepName}...");
+                        yield return EnsureEquipmentIsActive(body, equipIndex);
+                    }
+                }
+            }
+        }
+
         private static bool IsCraftingSessionReady(CraftingController c)
         {
             if (!c) return false;
@@ -299,7 +317,7 @@ namespace CookBook
                 if (t >= hardTimeout)
                 {
                     _log.LogWarning("[Execution] Timed out opening crafting UI.");
-                    Cleanup(closeUi: true);
+                    Abort();
                     yield break;
                 }
 
@@ -309,22 +327,41 @@ namespace CookBook
 
         private static List<PickupIndex> ResolveStepIngredients(ChefRecipe step)
         {
-            var list = new List<PickupIndex>(step.Ingredients.Sum(i => Mathf.Max(0, i.Count)));
+            if (step == null) return new List<PickupIndex>(0);
 
-            foreach (var ing in step.Ingredients)
+            int totalCount = Mathf.Max(0, step.CountA) + Mathf.Max(0, step.CountB);
+            var list = new List<PickupIndex>(totalCount);
+
+            int itemCount = ItemCatalog.itemCount;
+
+            void AddMany(int unifiedIndex, int count)
             {
-                int c = Mathf.Max(0, ing.Count);
-                if (c == 0) continue;
+                if (count <= 0) return;
+                if (unifiedIndex < 0) return;
 
-                PickupIndex pickup;
-                if (ing.IsItem)
-                    pickup = PickupCatalog.FindPickupIndex(ing.ItemIndex);
+                PickupIndex pickup = PickupIndex.none;
+
+                if (unifiedIndex < itemCount)
+                {
+                    pickup = PickupCatalog.FindPickupIndex((ItemIndex)unifiedIndex);
+                }
                 else
-                    pickup = PickupCatalog.FindPickupIndex(ing.EquipIndex);
+                {
+                    int equipRaw = unifiedIndex - itemCount;
+                    if ((uint)equipRaw < (uint)EquipmentCatalog.equipmentCount)
+                        pickup = PickupCatalog.FindPickupIndex((EquipmentIndex)equipRaw);
+                }
 
-                for (int k = 0; k < c; k++)
+                if (!pickup.isValid || pickup == PickupIndex.none) return;
+
+                for (int k = 0; k < count; k++)
                     list.Add(pickup);
             }
+
+            AddMany(step.IngA, Mathf.Max(0, step.CountA));
+
+            if (step.HasB)
+                AddMany(step.IngB, Mathf.Max(0, step.CountB));
 
             return list;
         }
@@ -593,18 +630,6 @@ namespace CookBook
             return true;
         }
 
-        private static int HashIngredients(PickupIndex[] arr)
-        {
-            if (arr == null) return 0;
-            unchecked
-            {
-                int h = 17;
-                for (int i = 0; i < arr.Length; i++)
-                    h = h * 31 + arr[i].value;
-                return h;
-            }
-        }
-
         private static int CountFilled(PickupIndex[] slots)
         {
             if (slots == null) return 0;
@@ -723,7 +748,6 @@ namespace CookBook
             var interactable = best.GetComponentInChildren<RoR2.IInteractable>() as Component;
             return interactable ? interactable.gameObject : best.gameObject;
         }
-
 
         private static IEnumerator HandleAcquisition(PickupIndex pi, int inventoryGoal, string actionPrefix)
         {
@@ -867,7 +891,7 @@ namespace CookBook
                 DebugLog.Trace(_log, "│ [Resources] Allied Trades:");
                 foreach (var trade in chain.AlliedTradeSparse)
                 {
-                    DebugLog.Trace(_log, $"│   - {trade.Donor?.userName ?? "Ally"}: {trade.Count}x {GetItemName(trade.UnifiedIndex)}");
+                    DebugLog.Trace(_log, $"│   - {trade.Donor?.userName ?? "Ally"}: {trade.TradesRequired}x {GetItemName(trade.UnifiedIndex)}");
 
                 }
             }
@@ -877,13 +901,29 @@ namespace CookBook
             for (int i = 0; i < singleChainSteps.Count; i++)
             {
                 var step = singleChainSteps[i];
-                string ingredients = string.Join(", ", step.Ingredients.Select(ing => $"{ing.Count}x {GetItemName(ing.UnifiedIndex)}"));
+                string ingredients = FormatStepIngredients(step);
                 DebugLog.Trace(_log, $"│   Step {i + 1}: [{ingredients}] —> {step.ResultCount}x {GetItemName(step.ResultIndex)}");
             }
             DebugLog.Trace(_log, "└──────────────────────────────────────────────────────────");
         }
 
-        // Helper for the dump
+        private static string FormatStepIngredients(ChefRecipe step)
+        {
+            if (step == null) return string.Empty;
+
+            var parts = new List<string>(2);
+
+            int ca = Mathf.Max(0, step.CountA);
+            if (ca > 0 && step.IngA >= 0)
+                parts.Add($"{ca}x {GetItemName(step.IngA)}");
+
+            int cb = Mathf.Max(0, step.CountB);
+            if (step.HasB && cb > 0 && step.IngB >= 0)
+                parts.Add($"{cb}x {GetItemName(step.IngB)}");
+
+            return string.Join(", ", parts);
+        }
+
         private static string GetItemName(int unifiedIndex)
         {
             if (unifiedIndex < ItemCatalog.itemCount)

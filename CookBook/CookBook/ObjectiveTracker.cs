@@ -63,7 +63,7 @@ namespace CookBook
             ObjectivePanelController.collectObjectiveSources += OnCollectObjectiveSources;
         }
 
-        internal static void Cleanup()
+        internal static void Shutdown()
         {
             ObjectivePanelController.collectObjectiveSources -= OnCollectObjectiveSources;
             ClearAllObjectives();

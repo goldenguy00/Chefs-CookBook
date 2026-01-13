@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Networking;
+using System;
 
 namespace CookBook
 {
@@ -9,6 +10,8 @@ namespace CookBook
     {
         private static readonly Dictionary<NetworkInstanceId, int> _usedTrades = new();
         private static int _maxTradesCache = 3; // Default fallback
+        internal static event Action<IReadOnlyCollection<NetworkUser>, bool> OnTradeCountsChanged;
+
 
         internal static void Init()
         {
@@ -21,29 +24,40 @@ namespace CookBook
         {
             _usedTrades.Clear();
 
+            int oldMax = _maxTradesCache;
+
             var shrine = ComputationalExchangeController.instance?.solusVendorShrine?.GetComponent<SolusVendorShrineController>();
             if (shrine)
-            {
                 _maxTradesCache = shrine.maxTrades;
-            }
+
+            if (oldMax != _maxTradesCache)
+                CookBook.Log.LogDebug($"[TradeTracker] maxTrades changed {oldMax} -> {_maxTradesCache}");
         }
 
-        private static void OnItemScrapped(ItemTier tier, Interactor interactor)
+        private static void OnItemScrapped(ItemTier tier, Interactor interactor) // fired when a user trades, we dont want stale paths so probably force a rebuild here
         {
             if (!interactor) return;
 
             var body = interactor.GetComponent<CharacterBody>();
             var networkUser = body?.master?.playerCharacterMasterController?.networkUser;
+            if (!networkUser) return;
 
-            if (networkUser)
+            var netId = networkUser.netId;
+            if (!_usedTrades.TryGetValue(netId, out int used))
+                used = 0;
+
+            int before = Mathf.Max(0, _maxTradesCache - used);
+
+            used++;
+            _usedTrades[netId] = used;
+
+            int after = Mathf.Max(0, _maxTradesCache - used);
+
+            CookBook.Log.LogDebug($"[TradeTracker] {networkUser.userName} used a trade ({used}/{_maxTradesCache})");
+
+            if (after != before)
             {
-                var netId = networkUser.netId;
-                if (!_usedTrades.ContainsKey(netId)) _usedTrades[netId] = 0;
-
-                _usedTrades[netId]++;
-                CookBook.Log.LogDebug($"[TradeTracker] {networkUser.userName} used a trade ({_usedTrades[netId]}/{_maxTradesCache})");
-
-                InventoryTracker.TriggerUpdate();
+                OnTradeCountsChanged?.Invoke(new[] { networkUser }, true);
             }
         }
 
@@ -52,18 +66,6 @@ namespace CookBook
             if (!user) return 0;
             int used = _usedTrades.TryGetValue(user.netId, out int count) ? count : 0;
             return Mathf.Max(0, _maxTradesCache - used);
-        }
-
-        public static Dictionary<NetworkUser, int> GetRemainingTradeCounts()
-        {
-            var map = new Dictionary<NetworkUser, int>();
-            foreach (var playerController in PlayerCharacterMasterController.instances)
-            {
-                var netUser = playerController.networkUser;
-                if (!netUser) continue;
-                map[netUser] = GetRemainingTrades(netUser);
-            }
-            return map;
         }
     }
 }

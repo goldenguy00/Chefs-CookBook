@@ -19,6 +19,8 @@ namespace CookBook
         internal static IReadOnlyList<CraftableEntry> LastCraftables { get; private set; }
         private static bool _skeletonBuilt = false;
         private static CraftingController _currentController;
+        private static InventorySnapshot _snap;
+        private static bool _hasSnap;
 
         private static GameObject _cookbookRoot;
         private static RectTransform _recipeListContent;
@@ -113,6 +115,19 @@ namespace CookBook
 
         //----- Confirmation -------
         private const float FooterHeightNorm = 0.05f;
+
+
+        internal static void SetSnapshot(InventorySnapshot snap)
+        {
+            _snap = snap;
+            _hasSnap = true;
+        }
+
+        internal static bool TryGetSnapshot(out InventorySnapshot snap)
+        {
+            snap = _snap;
+            return _hasSnap;
+        }
 
         //==================== LifeCycle ====================
         internal static void Init(ManualLogSource log)
@@ -304,8 +319,6 @@ namespace CookBook
                     break;
                 }
             }
-
-            Detach();
 
             if (StateController.ActiveCraftingController == target)
                 StateController.ActiveCraftingController = null;
@@ -941,7 +954,7 @@ namespace CookBook
                 foreach (var trade in chain.AlliedTradeSparse)
                 {
                     Sprite icon = GetIcon(trade.UnifiedIndex);
-                    if (icon != null) InstantiateSlot(_tradeSlotTemplate, runtime.VisualRect, icon, trade.Count);
+                    if (icon != null) InstantiateSlot(_tradeSlotTemplate, runtime.VisualRect, icon, trade.TradesRequired);
                 }
             }
 
@@ -1842,12 +1855,8 @@ namespace CookBook
 
             if (int.TryParse(val, out int requested))
             {
-                int max = _selectedChainData.GetMaxAffordable(
-                    InventoryTracker.GetLocalPhysicalStacks(),
-                    InventoryTracker.GetDronePotentialStacks(),
-                    InventoryTracker.GetAlliedSnapshots(),
-                    TradeTracker.GetRemainingTradeCounts()
-                );
+                if (!TryGetSnapshot(out var snap)) return;
+                int max = _selectedChainData.GetMaxAffordable(snap);
 
                 if (requested > max)
                 {
@@ -1882,12 +1891,8 @@ namespace CookBook
                 _globalCraftButtonText.text = "Combine";
             }
 
-            int max = clickedPath.Chain.GetMaxAffordable(
-                InventoryTracker.GetLocalPhysicalStacks(),
-                InventoryTracker.GetDronePotentialStacks(),
-                InventoryTracker.GetAlliedSnapshots(),
-                TradeTracker.GetRemainingTradeCounts()
-            );
+            if (!TryGetSnapshot(out var snap)) return;
+            int max = clickedPath.Chain.GetMaxAffordable(_snap);
 
             _repeatInputField.text = "1";
             if (_repeatInputField.placeholder is TextMeshProUGUI ph) ph.text = $"max {max}";
@@ -1899,19 +1904,17 @@ namespace CookBook
             if (_selectedChainData == null) return;
             if (!int.TryParse(_repeatInputField.text, out int count)) count = 1;
 
-            int max = _selectedChainData.GetMaxAffordable(
-                InventoryTracker.GetLocalPhysicalStacks(),
-                InventoryTracker.GetDronePotentialStacks(),
-                InventoryTracker.GetAlliedSnapshots(),
-                TradeTracker.GetRemainingTradeCounts()
-            );
+            if (!TryGetSnapshot(out var snap)) return;
+            int max = _selectedChainData.GetMaxAffordable(_snap);
+            if (max <= 0) return;
 
             int finalCount = Mathf.Clamp(count, 1, max);
             StateController.RequestCraft(_selectedChainData, finalCount);
         }
 
-        private static void CraftablesForUIChanged(IReadOnlyList<CraftableEntry> craftables)
+        private static void CraftablesForUIChanged(IReadOnlyList<CraftableEntry> craftables, InventorySnapshot snap)
         {
+            _snap = snap;
             LastCraftables = craftables;
             if (!_skeletonBuilt) return;
             PopulateRecipeList(LastCraftables);
@@ -2418,7 +2421,5 @@ namespace CookBook
             public CraftableEntry Entry;
             public GameObject RowGO;
         }
-
-
     }
 }

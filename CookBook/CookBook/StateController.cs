@@ -14,24 +14,33 @@ namespace CookBook
         private static CraftPlanner _planner;
 
         private static bool _initialized = false;
-        private static bool _subscribedInventoryHandler = false;
-        internal static SceneDef _laststage = null;
+        internal static Stage _laststage = null;
+        internal static bool _ischefstage = false;
 
-        private static List<CraftPlanner.CraftableEntry> _lastCraftables = new List<CraftPlanner.CraftableEntry>();
+        private static List<CraftPlanner.CraftableEntry> _newestCraftables = new List<CraftPlanner.CraftableEntry>();
         private static GameObject _runnerGO;
         private static StateRunner _craftingHandler;
         private static Coroutine _throttleRoutine;
 
-        // Crafting Parameters
+        private static bool _cleanerChefHaltEnabled;
+        private static bool _cleanerChefHooked;
+        private static Delegate _cleanerChefHandler;
+        private static Type _cleanerChefApiType;
+        private static System.Reflection.EventInfo _haltChangedEvent;
+        private static System.Reflection.PropertyInfo _haltEnabledProp;
+
+        private static InventorySnapshot _newestSnapshot;
+        private static int _computeEpoch = 0;
+
         internal static CraftingController ActiveCraftingController { get; set; }
         internal static GameObject TargetCraftingObject { get; set; }
         internal static bool IsAutoCrafting => CraftingExecutionHandler.IsAutoCrafting;
         public static bool BatchMode { get; set; } = false;
 
         // Events
-        internal static event Action<IReadOnlyList<CraftPlanner.CraftableEntry>> OnCraftablesForUIChanged;
+        internal static event Action<IReadOnlyList<CraftPlanner.CraftableEntry>, InventorySnapshot> OnCraftablesForUIChanged;
         internal static event Action OnChefStageEntered;
-        internal static event Action OnChefStageExited;
+        internal static event Action OnNonChefStageEntered;
 
         //--------------------------- LifeCycle -------------------------------
         internal static void Init(ManualLogSource log)
@@ -53,6 +62,10 @@ namespace CookBook
             DialogueHooks.ChefUiClosed += OnChefUiClosed;
 
             ChatNetworkHandler.OnIncomingObjective += OnNetworkObjectiveReceived;
+            InventoryTracker.OnSnapshotChanged += OnInventoryChanged;
+
+            OnChefStageEntered += EnableChef;
+            OnNonChefStageEntered += DisableChef;
         }
 
         /// <summary>
@@ -68,16 +81,40 @@ namespace CookBook
             DialogueHooks.ChefUiClosed -= OnChefUiClosed;
             DialogueHooks.Shutdown();
 
-            InventoryTracker.Disable();
-            InventoryTracker.OnInventoryChangedWithIndices -= OnInventoryChanged;
-            _subscribedInventoryHandler = false;
+            InventoryTracker.Shutdown();
+            InventoryTracker.OnSnapshotChanged -= OnInventoryChanged;
 
             ChatNetworkHandler.OnIncomingObjective -= OnNetworkObjectiveReceived;
-            ChatNetworkHandler.Disable();
+            ChatNetworkHandler.ShutDown();
+
+            OnChefStageEntered -= EnableChef;
+            OnNonChefStageEntered -= DisableChef;
+
+            try
+            {
+                if (_cleanerChefHooked && _haltChangedEvent != null && _cleanerChefHandler != null)
+                {
+                    _haltChangedEvent.RemoveEventHandler(null, _cleanerChefHandler);
+                }
+            }
+            catch (Exception e)
+            {
+                _log.LogWarning($"CookBook: Failed to unhook CleanerChef interop: {e.GetType().Name}: {e.Message}");
+            }
+            finally
+            {
+                _cleanerChefHooked = false;
+                _cleanerChefHandler = null;
+                _cleanerChefApiType = null;
+                _haltChangedEvent = null;
+                _haltEnabledProp = null;
+                _cleanerChefHaltEnabled = false;
+            }
 
             _planner = null;
             _runnerGO = null;
-            _lastCraftables.Clear();
+            _initialized = false;
+            _newestCraftables.Clear();
         }
 
         /// <summary>
@@ -85,13 +122,15 @@ namespace CookBook
         /// </summary>
         internal static void OnStageStart(Stage stage)
         {
-            if (CheckForChefPresence())
+            _ischefstage = CheckForChefPresence();
+
+            if (_ischefstage)
             {
                 OnChefStageEntered?.Invoke();
             }
             else
             {
-                OnChefStageExited?.Invoke();
+                OnNonChefStageEntered?.Invoke();
             }
         }
 
@@ -100,10 +139,7 @@ namespace CookBook
         /// </summary>
         private static void OnRunStart(Run run)
         {
-            OnChefStageEntered += EnableChef;
-            OnChefStageExited += DisableChef;
-
-            ChatNetworkHandler.Enable();
+            InventoryTracker.Start();
             _craftingHandler = _runnerGO.AddComponent<StateRunner>();
         }
 
@@ -118,18 +154,8 @@ namespace CookBook
                 _craftingHandler = null;
             }
 
-            CraftUI.Detach();
-
-            OnChefStageEntered -= EnableChef;
-            OnChefStageExited -= DisableChef;
-
-            _subscribedInventoryHandler = false;
-            _lastCraftables.Clear();
-
-            ChatNetworkHandler.Disable();
-
-            InventoryTracker.Disable();
-            InventoryTracker.OnInventoryChangedWithIndices -= OnInventoryChanged;
+            InventoryTracker.Shutdown();
+            _newestCraftables.Clear();
         }
 
         // -------------------- CookBook Handshake Events --------------------
@@ -138,41 +164,49 @@ namespace CookBook
             ObjectiveTracker.AddAlliedRequest(sender, command, unifiedIdx, quantity);
         }
 
-        internal static void OnRecipesBuilt(IReadOnlyList<ChefRecipe> recipes)
+        internal static void OnRecipesBuilt()
         {
-            var planner = new CraftPlanner(recipes, CookBook.MaxDepth.Value, _log);
+            var planner = new CraftPlanner(CookBook.DepthLimit, _log);
             SetPlanner(planner);
         }
 
-        private static void OnInventoryChanged(int[] unifiedStacks, HashSet<int> changedIndices)
+        private static void OnInventoryChanged(InventorySnapshot snapshot, int[] changedIndices, int changedcount, bool forceRebuild)
         {
-            if (BatchMode) return;
+            if (!_ischefstage) return;
+            if (_planner == null) return;
 
-            QueueThrottledCompute(unifiedStacks, changedIndices);
+            if (BatchMode)
+            {
+                DebugLog.Trace(_log, "Inventory Changed, but craft is in progress, skipping rebuild.");
+                return;
+            }
+            QueueThrottledCompute(snapshot, changedIndices, changedcount, forceRebuild);
         }
 
-        private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables)
+        private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables, InventorySnapshot snap)
         {
-            _lastCraftables = craftables;
-            if (IsChefStage()) OnCraftablesForUIChanged?.Invoke(_lastCraftables);
+            _newestCraftables = craftables;
+            _newestSnapshot = snap;
+            CraftUI.SetSnapshot(snap);
+            if (IsChefStage()) OnCraftablesForUIChanged?.Invoke(_newestCraftables, snap);
         }
 
         internal static void OnTierOrderChanged()
         {
-            if (_lastCraftables == null || _lastCraftables.Count == 0 || !IsChefStage()) return;
-            _lastCraftables.Sort(TierManager.CompareCraftableEntries);
-            OnCraftablesForUIChanged?.Invoke(_lastCraftables);
+            if (_newestCraftables == null || _newestCraftables.Count == 0 || !IsChefStage()) return;
+            _newestCraftables.Sort(TierManager.CompareCraftableEntries);
+            OnCraftablesForUIChanged?.Invoke(_newestCraftables, _newestSnapshot);
         }
 
         internal static void OnMaxDepthChanged(object _, EventArgs __)
         {
             if (_planner == null) return;
 
-            _planner.SetMaxDepth(CookBook.MaxDepth.Value);
+            _planner.SetMaxDepth(CookBook.DepthLimit);
 
             if (IsChefStage())
             {
-                QueueThrottledCompute(InventoryTracker.GetUnifiedStacksCopy(), null);
+                QueueThrottledCompute(_newestSnapshot, null, 0, true);
             }
         }
 
@@ -182,7 +216,27 @@ namespace CookBook
 
             if (IsChefStage())
             {
-                QueueThrottledCompute(InventoryTracker.GetUnifiedStacksCopy(), null);
+                QueueThrottledCompute(_newestSnapshot, null, 0, true);
+            }
+        }
+
+        internal static void OnMaxProducersPerBridgeChanged(object _, EventArgs __)
+        {
+            if (_planner == null) return;
+
+            if (IsChefStage())
+            {
+                QueueThrottledCompute(_newestSnapshot, null, 0, true);
+            }
+        }
+
+        internal static void OnMaxBridgeItemsPerChainChanged(object _, EventArgs __)
+        {
+            if (_planner == null) return;
+
+            if (IsChefStage())
+            {
+                QueueThrottledCompute(_newestSnapshot, null, 0, true);
             }
         }
 
@@ -191,45 +245,57 @@ namespace CookBook
             StateController.ForceVisualRefresh();
         }
 
+        internal static void OnCleanerChefHaltChanged(bool haltEnabled)
+        {
+            _cleanerChefHaltEnabled = haltEnabled;
+
+            bool desired = !haltEnabled;
+
+            if (CookBook.PreventCorruptedCrafting != null &&
+                CookBook.PreventCorruptedCrafting.Value != desired)
+            {
+                CookBook.PreventCorruptedCrafting.Value = desired;
+                DebugLog.Trace(_log, haltEnabled ? "CookBook: PreventCorruptedCrafting disabled (CleanerChef enabled)." : "CookBook: PreventCorruptedCrafting re-enabled (CleanerChef disabled).");
+            }
+        }
+
+        internal static void OnPreventCorruptedCraftingChanged(object sender, EventArgs e)
+        {
+            if (_cleanerChefHaltEnabled && CookBook.PreventCorruptedCrafting.Value)
+            {
+                CookBook.PreventCorruptedCrafting.Value = false;
+                DebugLog.Trace(_log, "CookBook: PreventCorruptedCrafting locked off (CleanerChef enabled).");
+            }
+        }
 
         // -------------------- Chef Events --------------------
         private static void EnableChef()
         {
             DebugLog.Trace(_log, "Chef controller enabled.");
+            BatchMode = false;
 
-            if (!_subscribedInventoryHandler)
-            {
-                InventoryTracker.OnInventoryChangedWithIndices += OnInventoryChanged;
-                _subscribedInventoryHandler = true;
-            }
-            ObjectiveTracker.Init();
             CraftingExecutionHandler.Init(_log, _craftingHandler);
-            InventoryTracker.Enable();
+            InventoryTracker.Resume();
             TargetCraftingObject = null;
         }
 
         private static void DisableChef()
         {
-            if (!_subscribedInventoryHandler) return;
-
-            InventoryTracker.OnInventoryChangedWithIndices -= OnInventoryChanged;
-            _subscribedInventoryHandler = false;
             BatchMode = false;
 
             CraftingExecutionHandler.Abort();
-            ObjectiveTracker.Cleanup();
-            InventoryTracker.Disable();
+            InventoryTracker.Pause();
 
             _planner = null;
-            _lastCraftables.Clear();
-            _lastCraftables.TrimExcess();
+            _newestCraftables.Clear();
+            _newestCraftables.TrimExcess();
 
-            CraftUI.Detach();
+            CraftUI.CloseCraftPanel();
         }
 
         internal static void OnChefUiOpened(CraftingController controller)
         {
-            if (!IsChefStage()) return;
+            _ischefstage = true;
 
             ActiveCraftingController = controller;
 
@@ -237,12 +303,14 @@ namespace CookBook
             TargetCraftingObject = (interactable as Component)?.gameObject ?? controller.gameObject;
 
             if (IsAutoCrafting) return;
+
+            CraftUI.SetSnapshot(_newestSnapshot);
             CraftUI.Attach(ActiveCraftingController);
         }
 
-
         internal static void OnChefUiClosed(CraftingController controller)
         {
+            DebugLog.Trace(_log, "Crafting UI Closed, detaching CraftUI.");
             if (ActiveCraftingController == controller)
             {
                 CraftUI.Detach();
@@ -261,10 +329,7 @@ namespace CookBook
             if (w == null) return;
             w.Write((byte)1);
             prompt.FinishMessageToServer(w);
-
         }
-
-
 
         //-------------------------------- Craft Handling ----------------------------------
         internal static void RequestCraft(CraftPlanner.RecipeChain chain, int count)
@@ -312,13 +377,25 @@ namespace CookBook
         }
 
         //--------------------------------------- Helpers ----------------------------------------
+        internal static void InstallCleanerChefInterop(
+            Type apiType,
+            System.Reflection.EventInfo haltChangedEvent,
+            System.Reflection.PropertyInfo haltEnabledProp,
+            Delegate handler)
+        {
+            _cleanerChefApiType = apiType;
+            _haltChangedEvent = haltChangedEvent;
+            _haltEnabledProp = haltEnabledProp;
+            _cleanerChefHandler = handler;
+            _cleanerChefHooked = true;
+        }
+
         internal static void ForceVisualRefresh()
         {
             if (!IsChefStage()) return;
 
-            _planner?.RefreshVisualOverridesAndEmit();
+            _planner?.RefreshVisualOverridesAndEmit(InventoryTracker.GetSnapshot());
         }
-
 
         internal static bool CheckForChefPresence()
         {
@@ -335,6 +412,7 @@ namespace CookBook
 
             return false;
         }
+
         internal static void ForceRebuild()
         {
             if (_planner == null || !IsChefStage()) return;
@@ -343,11 +421,8 @@ namespace CookBook
             if (snapshot.FilteredRecipes == null) return;
 
             _planner.ComputeCraftable(
-                InventoryTracker.GetUnifiedStacksCopy(),
-                snapshot.FilteredRecipes,
-                snapshot.CanScrapDrones,
-                null,
-                true
+                snapshot,
+                forceUpdate: true
             );
         }
 
@@ -361,58 +436,61 @@ namespace CookBook
             if (_planner != null) _planner.OnCraftablesUpdated += OnCraftablesUpdated;
             if (IsChefStage())
             {
-                if (!_subscribedInventoryHandler)
-                {
-                    InventoryTracker.OnInventoryChangedWithIndices += OnInventoryChanged;
-                    _subscribedInventoryHandler = true;
-                }
-                TakeSnapshot(InventoryTracker.GetUnifiedStacksCopy());
+                TakeSnapshot();
             }
         }
 
-        private static void QueueThrottledCompute(int[] unifiedStacks, HashSet<int> changedIndices)
+        private static void QueueThrottledCompute(InventorySnapshot snapshot, int[] changedIndices, int changedCount, bool forceRebuild)
         {
-            if (!_craftingHandler) return;
+            if (!_craftingHandler || !_ischefstage) return;
+
+            _computeEpoch++;
             if (_throttleRoutine != null) _craftingHandler.StopCoroutine(_throttleRoutine);
-            _throttleRoutine = _craftingHandler.StartCoroutine(ThrottledComputeRoutine(unifiedStacks, changedIndices));
+
+            int myEpoch = _computeEpoch;
+
+            DebugLog.Trace(_log, "Compute Routine Queued.");
+            _throttleRoutine = _craftingHandler.StartCoroutine(ThrottledComputeRoutine(snapshot, changedIndices, changedCount, myEpoch, forceRebuild));
         }
 
         //--------------------------------------- Coroutines ---------------------------------------------
-        private static IEnumerator ThrottledComputeRoutine(int[] unifiedStacks, HashSet<int> changedIndices)
+        private static IEnumerator ThrottledComputeRoutine(InventorySnapshot snapshot, int[] changedIndices, int changedCount, int epoch, bool forceRebuild)
         {
             yield return new WaitForSecondsRealtime(CookBook.ComputeThrottleMs.Value / 1000f);
-            if (_planner == null) yield break;
+            if (epoch != _computeEpoch)
+                yield break;
 
-            var snapshot = InventoryTracker.GetSnapshot();
+            if (_planner == null) yield break;
 
             if (ItemCatalog.itemCount != _planner.SourceItemCount)
             {
                 RecipeProvider.Rebuild();
-                SetPlanner(new CraftPlanner(RecipeProvider.Recipes, CookBook.MaxDepth.Value, _log));
+                SetPlanner(new CraftPlanner(CookBook.DepthLimit, _log));
             }
 
+            if (epoch != _computeEpoch)
+                yield break;
+
             _planner.ComputeCraftable(
-                unifiedStacks,
-                snapshot.FilteredRecipes,
-                snapshot.CanScrapDrones,
-                changedIndices,
-                false
+                snapshot,
+                changedIndices: changedIndices,
+                changedCount: changedCount,
+                forceRebuild
             );
 
             _throttleRoutine = null;
         }
-        internal static bool IsChefStage() => CheckForChefPresence();
-        internal static void TakeSnapshot(int[] unifiedStacks)
+
+        internal static bool IsChefStage() => _ischefstage;
+
+        internal static void TakeSnapshot()
         {
             if (_planner == null) return;
-
-            var snapshot = InventoryTracker.GetSnapshot();
             _planner.ComputeCraftable(
-                unifiedStacks,
-                snapshot.FilteredRecipes,
-                snapshot.CanScrapDrones
-            );
+               InventoryTracker.GetSnapshot(),
+               changedIndices: null,
+               forceUpdate: true
+           );
         }
-        internal static SceneDef GetCurrentScene() => Stage.instance ? Stage.instance.sceneDef : null;
     }
 }

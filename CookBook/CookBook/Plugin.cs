@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using static CookBook.TierManager;
+using static RoR2.Console;
 
 namespace CookBook
 {
@@ -22,16 +23,20 @@ namespace CookBook
 
         public static ConfigEntry<int> MaxDepth;
         public static ConfigEntry<int> MaxChainsPerResult;
+        public static ConfigEntry<int> MaxBridgeItemsPerChain;
+        public static ConfigEntry<int> MaxProducersPerBridge;
         public static ConfigEntry<int> ComputeThrottleMs;
         public static ConfigEntry<string> TierOrder;
         public static ConfigEntry<KeyboardShortcut> AbortKey;
         public static ConfigEntry<bool> AllowMultiplayerPooling;
         public static ConfigEntry<bool> ConsiderDrones;
         public static ConfigEntry<bool> PreventCorruptedCrafting;
-        public static ConfigEntry<bool> DebugMode;
         public static ConfigEntry<bool> ShowCorruptedResults;
         internal static ConfigEntry<IndexSortMode> InternalSortOrder;
         internal static Dictionary<ItemTier, ConfigEntry<TierPriority>> TierPriorities = new();
+
+        public static ConfigEntry<bool> DebugMode;
+        public static ConfigEntry<bool> LogCraftMode;
 
         public static int DepthLimit => MaxDepth.Value;
         public static int ChainsLimit => MaxChainsPerResult.Value;
@@ -40,12 +45,8 @@ namespace CookBook
         public static bool IsDroneScrappingEnabled => ConsiderDrones.Value;
         public static bool ShouldBlockCorrupted => PreventCorruptedCrafting.Value;
         public static bool isDebugMode => DebugMode.Value;
-        private static bool _cleanerChefHaltEnabled;
-        private static bool _cleanerChefHooked;
-        private static Delegate _cleanerChefHandler;
-        private static Type _cleanerChefApiType;
-        private static System.Reflection.EventInfo _haltChangedEvent;
-        private static System.Reflection.PropertyInfo _haltEnabledProp;
+        public static bool isLogCraftMode => DebugMode.Value;
+
 
         public void Awake()
         {
@@ -67,8 +68,14 @@ namespace CookBook
             DebugMode = Config.Bind<bool>(
                 "General",
                 "Enable Debug Mode",
+                true,
+                "When enabled, the console will show detailed logging of the backend, excluding culling logic (for spam reasons). Useful for debugging."
+            );
+            LogCraftMode = Config.Bind<bool>(
+                "General",
+                "Enable Craft Logging",
                 false,
-                "When enabled, the console will show detailed logging of the crafting backend. Useful for debugging."
+                "When enabled, the console will show logging of all culled chains. Useful when modifying the traversal algorithm."
             );
 
             AllowMultiplayerPooling = Config.Bind(
@@ -108,6 +115,18 @@ namespace CookBook
                 40,
                 "Maximum number of unique recipe paths to store for each result. Higher values allow more variety but increase compute time and memory usage."
             );
+            MaxBridgeItemsPerChain = Config.Bind(
+                "Performance",
+                "Max Bridged Dependencies Per Result",
+                50,
+                "Maximum number of bridges between recipes within a single result, allows crafts to request intermediate items if it satisfies a later demand. Higher values yields a more complete search but increases compute time and memory usage."
+            );
+            MaxProducersPerBridge = Config.Bind(
+                "Performance",
+                "Max Routes Per Bridge",
+                4,
+                "Maximum number of unique parallel paths to inject for each added item bridge. Higher values yields a more complete search but increases compute time and memory usage."
+            );
             InternalSortOrder = Config.Bind(
                 "Tier Sorting",
                 "Indexing Sort Mode",
@@ -122,24 +141,23 @@ namespace CookBook
             );
 
 
-            if (BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("rainorshine.CleanChef"))
-            {
-                if (!TryHookCleanerChefReflection())
-                {
-                    Log.LogWarning("CookBook: CleanerChef detected but API is missing/outdated. Skipping interop.");
-                }
-            }
 
             TierManager.Init(Log);
-            RecipeProvider.Init(Log); // Parse all chef recipe rules
-            StateController.Init(Log); // Initialize chef/state logic
-            DialogueHooks.Init(Log); // Initialize all Chef Dialogue Hooks
-            InventoryTracker.Init(Log); // Begin waiting for Enable signal
-            CraftUI.Init(Log); // Initialize craft UI injection
-            ChatNetworkHandler.Init(Log);
             RegisterAssets.Init();
+            RecipeProvider.Init(Log); // Parse all chef recipe rules
+            ChatNetworkHandler.Init(Log);
+
+            StateController.Init(Log); // Initialize chef/state logic
+            InventoryTracker.Init(Log); // Begin waiting for Enable signal
+
+            DialogueHooks.Init(Log); // Initialize Chef Dialogue Hooks
+            ObjectiveTracker.Init();
+            CraftUI.Init(Log); // Initialize craft UI injection
+
             // VanillaCraftingTrace.Init(Log);
             // RecipeTrackerUI.Init(Log);
+
+            TryHookCleanerChef();
 
             ItemCatalog.availability.CallWhenAvailable(() =>
             {
@@ -184,10 +202,12 @@ namespace CookBook
                 }
             });
 
-            PreventCorruptedCrafting.SettingChanged += OnPreventCorruptedCraftingChanged;
-            ConsiderDrones.SettingChanged += InventoryTracker.OnConsiderDronesChanged;
+            PreventCorruptedCrafting.SettingChanged += StateController.OnPreventCorruptedCraftingChanged;
             ShowCorruptedResults.SettingChanged += StateController.OnShowCorruptedResultsChanged;
             MaxDepth.SettingChanged += StateController.OnMaxDepthChanged;
+            MaxProducersPerBridge.SettingChanged += StateController.OnMaxProducersPerBridgeChanged;
+            MaxBridgeItemsPerChain.SettingChanged += StateController.OnMaxBridgeItemsPerChainChanged;
+
             MaxChainsPerResult.SettingChanged += StateController.OnMaxChainsPerResultChanged;
             InternalSortOrder.SettingChanged += TierManager.OnTierPriorityChanged;
             TierManager.OnTierOrderChanged += StateController.OnTierOrderChanged;
@@ -204,34 +224,13 @@ namespace CookBook
                 if (tierEntry != null) tierEntry.SettingChanged -= TierManager.OnTierPriorityChanged;
             }
 
-            try
-            {
-                if (_cleanerChefHooked && _haltChangedEvent != null && _cleanerChefHandler != null)
-                {
-                    _haltChangedEvent.RemoveEventHandler(null, _cleanerChefHandler);
-                }
-            }
-            catch (Exception e)
-            {
-                Log.LogWarning($"CookBook: Failed to unhook CleanerChef interop: {e.GetType().Name}: {e.Message}");
-            }
-            finally
-            {
-                _cleanerChefHooked = false;
-                _cleanerChefHandler = null;
-                _cleanerChefApiType = null;
-                _haltChangedEvent = null;
-                _haltEnabledProp = null;
-                _cleanerChefHaltEnabled = false;
-            }
-
-
-            PreventCorruptedCrafting.SettingChanged -= OnPreventCorruptedCraftingChanged;
+            PreventCorruptedCrafting.SettingChanged -= StateController.OnPreventCorruptedCraftingChanged;
             ShowCorruptedResults.SettingChanged -= StateController.OnShowCorruptedResultsChanged;
             MaxDepth.SettingChanged -= StateController.OnMaxDepthChanged;
-            ConsiderDrones.SettingChanged -= InventoryTracker.OnConsiderDronesChanged;
             MaxChainsPerResult.SettingChanged -= StateController.OnMaxChainsPerResultChanged;
-            // Clean up global event subscriptions
+            MaxProducersPerBridge.SettingChanged -= StateController.OnMaxProducersPerBridgeChanged;
+            MaxBridgeItemsPerChain.SettingChanged -= StateController.OnMaxBridgeItemsPerChainChanged;
+
             RecipeProvider.OnRecipesBuilt -= StateController.OnRecipesBuilt;
             TierManager.OnTierOrderChanged -= StateController.OnTierOrderChanged;
 
@@ -244,63 +243,55 @@ namespace CookBook
             StateController.Shutdown();
             DialogueHooks.Shutdown();
             CraftUI.Shutdown();
+            ObjectiveTracker.Shutdown();
+            ChatNetworkHandler.ShutDown();
         }
 
-        private static void OnCleanerChefHaltChanged(bool haltEnabled)
+        private void TryHookCleanerChef()
         {
-            _cleanerChefHaltEnabled = haltEnabled;
-
-            bool desired = !haltEnabled;
-
-            if (PreventCorruptedCrafting != null &&
-                PreventCorruptedCrafting.Value != desired)
-            {
-                PreventCorruptedCrafting.Value = desired;
-                DebugLog.Trace(Log, haltEnabled ? "CookBook: PreventCorruptedCrafting disabled (CleanerChef enabled)." : "CookBook: PreventCorruptedCrafting re-enabled (CleanerChef disabled).");
-            }
-        }
-
-        private static void OnPreventCorruptedCraftingChanged(object sender, EventArgs e)
-        {
-            if (_cleanerChefHaltEnabled && PreventCorruptedCrafting.Value)
-            {
-                PreventCorruptedCrafting.Value = false;
-                DebugLog.Trace(Log, "CookBook: PreventCorruptedCrafting locked off (CleanerChef enabled).");
-            }
-        }
-
-        private bool TryHookCleanerChefReflection()
-        {
-            if (_cleanerChefHooked) return true;
+            if (!BepInEx.Bootstrap.Chainloader.PluginInfos.TryGetValue("rainorshine.CleanChef", out var info) || info == null)
+                return;
 
             try
             {
-                var info = BepInEx.Bootstrap.Chainloader.PluginInfos["rainorshine.CleanChef"];
+                if (info.Instance == null)
+                {
+                    Log.LogInfo("CookBook: CleanChef present but not instantiated yet; deferring interop hook.");
+                    RoR2Application.onLoad += () => { TryHookCleanerChef(); };
+                    return;
+                }
+
                 var asm = info.Instance.GetType().Assembly;
+                var apiType = asm.GetType("CleanerChef.CleanerChefAPI", throwOnError: false);
+                if (apiType == null)
+                {
+                    Log.LogWarning("CookBook: CleanChef found but CleanerChefAPI type not found; skipping interop.");
+                    return;
+                }
 
-                _cleanerChefApiType = asm.GetType("CleanerChef.CleanerChefAPI", throwOnError: false);
-                if (_cleanerChefApiType == null) return false;
+                var evt = apiType.GetEvent("HaltCorruptionChanged");
+                var prop = apiType.GetProperty("HaltCorruptionEnabled");
+                if (evt == null || prop == null)
+                {
+                    Log.LogWarning("CookBook: CleanChef API missing expected members; skipping interop.");
+                    return;
+                }
 
-                _haltChangedEvent = _cleanerChefApiType.GetEvent("HaltCorruptionChanged");
-                _haltEnabledProp = _cleanerChefApiType.GetProperty("HaltCorruptionEnabled");
+                Action<bool> handlerMethod = StateController.OnCleanerChefHaltChanged;
+                var handler = Delegate.CreateDelegate(evt.EventHandlerType, handlerMethod.Target, handlerMethod.Method);
 
-                if (_haltChangedEvent == null || _haltEnabledProp == null) return false;
+                evt.AddEventHandler(null, handler);
 
-                Action<bool> handler = OnCleanerChefHaltChanged;
-                _cleanerChefHandler = Delegate.CreateDelegate(_haltChangedEvent.EventHandlerType, handler.Target, handler.Method);
-                _haltChangedEvent.AddEventHandler(null, _cleanerChefHandler);
+                StateController.InstallCleanerChefInterop(apiType, evt, prop, handler);
 
-                bool current = (bool)_haltEnabledProp.GetValue(null);
-                OnCleanerChefHaltChanged(current);
+                bool current = (bool)prop.GetValue(null, null);
+                StateController.OnCleanerChefHaltChanged(current);
 
-                _cleanerChefHooked = true;
-                DebugLog.Trace(Log, "CookBook: CleanerChef interop hooked (reflection).");
-                return true;
+                Log.LogInfo("CookBook: CleanerChef interop hooked (reflection).");
             }
             catch (Exception e)
             {
                 Log.LogWarning($"CookBook: CleanerChef interop failed; skipping. {e.GetType().Name}: {e.Message}");
-                return false;
             }
         }
 
@@ -311,6 +302,13 @@ namespace CookBook
         public static void Trace(ManualLogSource log, string message)
         {
             if (!CookBook.isDebugMode)
+                return;
+
+            log.LogDebug(message);
+        }
+        public static void CraftTrace(ManualLogSource log, string message)
+        {
+            if (CookBook.isLogCraftMode)
                 return;
 
             log.LogDebug(message);

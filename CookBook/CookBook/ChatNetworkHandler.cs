@@ -19,17 +19,13 @@ namespace CookBook
         internal static void Init(ManualLogSource log)
         {
             _log = log;
-        }
-
-        internal static void Enable()
-        {
             if (_enabled) return;
             _enabled = true;
             On.RoR2.Chat.AddMessage_string += OnAddMessage;
             On.RoR2.Chat.UserChatMessage.OnProcessed += OnUserChatMessageProcessed;
         }
 
-        internal static void Disable()
+        internal static void ShutDown()
         {
             if (!_enabled) return;
             _enabled = false;
