@@ -4,83 +4,25 @@
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<LangVersion>preview</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<BaseOutputPath>C:\Users\logan\Desktop\Personal Projects\LBurnsUF\Chefs-CookBook</BaseOutputPath>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
 		<DefineConstants>$(DefineConstants);COOKBOOK_PERF</DefineConstants>
+		<Optimize>True</Optimize>
 	</PropertyGroup>
 
 	<ItemGroup>
-		<Compile Include="ChatNetworkHandler.cs" />
-		<Compile Include="CraftingExecutionHandler.cs" />
-		<Compile Include="ObjectiveTracker.cs" />
-		<Compile Include="CraftPlanner.cs" />
-		<Compile Include="CraftUI.cs" />
-		<Compile Include="DialogueHooks.cs" />
-		<Compile Include="InventoryTracker.cs" />
-		<Compile Include="Log.cs" />
-		<Compile Include="PerfProfile.cs" />
-		<Compile Include="Plugin.cs" />
-		<Compile Include="RecipeFilter.cs" />
-		<Compile Include="RecipeProvider.cs" />
-		<Compile Include="RecipeTrackerUI.cs" />
-		<Compile Include="RegisterAssets.cs" />
-		<Compile Include="SettingsUI.cs" />
-		<Compile Include="StateController.cs" />
-		<Compile Include="TierManager.cs" />
-		<Compile Include="TradeTracker.cs" />
-		<Compile Include="VanillaCraftingTrace.cs" />
-	</ItemGroup>
 
-	<ItemGroup>
+		<PackageReference Include="BepInEx.Analyzers" Version="1.0.8">
+		  <PrivateAssets>all</PrivateAssets>
+		  <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+		</PackageReference>
 
 		<PackageReference Include="BepInEx.Core" Version="5.4.21" />
-		<PackageReference Include="MMHOOK.RoR2" Version="2025.11.19" NoWarn="NU1701" />
+		<PackageReference Include="MMHOOK.RoR2" Version="2025.12.9" NoWarn="NU1701" />
+		<PackageReference Include="RiskOfRain2.GameLibs" Version="1.4.1-r.0" />
+		<PackageReference Include="Rune580.Mods.RiskOfRain2.RiskOfOptions" Version="2.8.3" />
 		<PackageReference Include="UnityEngine.Modules" Version="2021.3.33" IncludeAssets="compile" />
 
-	</ItemGroup>
-
-	<ItemGroup>
-		<Reference Include="Assembly-CSharp">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\Assembly-CSharp.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="RoR2">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\RoR2.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="com.unity.multiplayer-hlapi.Runtime">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\com.unity.multiplayer-hlapi.Runtime.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="HGCSharpUtils">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\HGCSharpUtils.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="Unity.TextMeshPro">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\Unity.TextMeshPro.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="UnityEngine.UI">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\UnityEngine.UI.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="RiskOfOptions">
-			<HintPath>C:\Users\logan\AppData\Roaming\r2modmanPlus-local\RiskOfRain2\profiles\Default\BepInEx\plugins\Rune580-Risk_Of_Options\RiskOfOptions\RiskOfOptions.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="Unity.Addressables">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\Unity.Addressables.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="Unity.ResourceManager">
-			<HintPath>D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2_Data\Managed\Unity.ResourceManager.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
-		<Reference Include="CleanerChef">
-			<HintPath>C:\Users\logan\Desktop\Personal Projects\LBurnsUF\CleanChef\Cleaner-Chef\CleanChef\bin\Release\netstandard2.1\CleanerChef.dll</HintPath>
-			<Private>False</Private>
-		</Reference>
 	</ItemGroup>
 
 </Project>

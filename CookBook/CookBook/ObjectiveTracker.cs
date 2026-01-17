@@ -171,9 +171,9 @@ namespace CookBook
         {
             private ObjectiveToken MyToken => sourceDescriptor.source as ObjectiveToken;
 
-            protected override bool IsDirty() => MyToken != null && cachedString != GenerateString();
+            public override bool IsDirty() => MyToken != null && cachedString != GenerateString();
 
-            protected override string GenerateString()
+            public override string GenerateString()
             {
                 if (!MyToken) return string.Empty;
 
