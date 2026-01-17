@@ -324,7 +324,6 @@ namespace CookBook
                 StateController.ActiveCraftingController = null;
         }
 
-
         internal static void Shutdown()
         {
             StateController.OnCraftablesForUIChanged -= CraftablesForUIChanged;
@@ -697,8 +696,8 @@ namespace CookBook
             });
 
             AddBorderTapered(searchRect, new Color32(209, 209, 210, 200), bottom: borderThickness);
+            AddBorder(labelGO.GetComponent<RectTransform>(), new Color32(209, 209, 210, 200), 1f, 1f, 1f, 1f);
 
-            // TODO: update general shape to match ROR2 style
             // ------------------------ Footer ------------------------
             GameObject footerGO = CreateUIObject("Footer", typeof(RectTransform));
             var footerRT = footerGO.GetComponent<RectTransform>();
@@ -781,6 +780,7 @@ namespace CookBook
             _repeatInputField.text = string.Empty;
             _repeatInputField.onEndEdit.AddListener(OnRepeatInputEndEdit);
 
+            AddBorder(craftBtnRT, new Color32(209, 209, 210, 200), 1f, 1f, 1f, 1f);
             AddBorder(footerRT, new Color32(209, 209, 210, 200), 1f, 1f, 1f, 1f);
 
             //------------------------ RecipeListContainer ------------------------

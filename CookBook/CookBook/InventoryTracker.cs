@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using UnityEngine;
+using static UnityEngine.UIElements.UxmlAttributeDescription;
 namespace CookBook
 {
     /// <summary>
@@ -108,6 +109,7 @@ namespace CookBook
 
         internal static void Pause()
         {
+            DebugLog.Trace(_log, "InventoryTracker.Pause(): Clearing state and disabling updates.");
             _active = false;
 
             CancelPendingEmit();
@@ -122,6 +124,7 @@ namespace CookBook
 
         internal static void Resume()
         {
+            DebugLog.Trace(_log, "InventoryTracker.Resume(): Resetting state and attempting late-bind.");
             Start();
             _active = true;
 
@@ -148,19 +151,18 @@ namespace CookBook
                 }
             }
 
-            TryBindFromExistingBodies();
-            if (_localInventory != null)
+            if (TryBindFromExistingBodies())
             {
+                DebugLog.Trace(_log, "InventoryTracker.Resume(): Successfully bound to existing player.");
                 int totalLen = ItemCatalog.itemCount + EquipmentCatalog.equipmentCount;
                 for (int i = 0; i < totalLen; i++) _pendingChanged.Add(i);
 
-                _itemsDirty = true;
-                _dronesDirty = true;
-                _remoteItemsDirty = true;
-                _tradeDirty = true;
-
                 MarkForceRebuild();
-                QueueEmit("Resume");
+                QueueEmit("Resume (Bound)");
+            }
+            else
+            {
+                DebugLog.Trace(_log, "InventoryTracker.Resume(): No existing player found to bind.");
             }
         }
 
@@ -222,7 +224,6 @@ namespace CookBook
         {
             if (!_active) return;
 
-            bool droneFeatureEnabled = CookBook.IsDroneScrappingEnabled;
             foreach (var kvp in _tierToScrapItemIdx)
             {
                 int idx = (int)kvp.Value;
@@ -259,10 +260,17 @@ namespace CookBook
 
             if (isLocal)
             {
+                if (_localInventory == null || inv != _localInventory)
+                {
+                    DebugLog.Trace(_log, $"OnGlobalInventoryChanged: Binding/Rebinding local inventory to {inv.netId}.");
+                    RebindLocal(inv);
+                }
+
                 int[] currentStacks = GetUnifiedStacksFor(inv);
 
-                if (!HasPermanentChanges(_cachedLocalPhysical, currentStacks))
-                    return;
+                if (!HasPermanentChanges(_cachedLocalPhysical, currentStacks)) return;
+
+                DebugLog.Trace(_log, "OnGlobalInventoryChanged: Local inventory change detected.");
 
                 if (_cachedLocalPhysical != null)
                 {
@@ -279,18 +287,17 @@ namespace CookBook
                 _cachedLocalPhysical = currentStacks;
                 _itemsDirty = true;
 
-                QueueEmit("OnGlobalInventoryChanged: item");
+                QueueEmit("OnGlobalInventoryChanged: Local");
                 return;
             }
-
-            if (CookBook.IsPoolingEnabled && user != null)
+            else if (CookBook.IsPoolingEnabled && user != null)
             {
                 int[] currentStacks = GetUnifiedStacksFor(inv);
                 _cachedAlliedPhysical.TryGetValue(inv, out int[] oldStacks);
 
-                if (!HasPermanentChanges(oldStacks, currentStacks))
-                    return;
+                if (!HasPermanentChanges(oldStacks, currentStacks)) return;
 
+                DebugLog.Trace(_log, $"OnGlobalInventoryChanged: Allied inventory change detected. Refreshing inventory snapshot for {user.userName}.");
                 if (oldStacks != null)
                 {
                     for (int i = 0; i < currentStacks.Length; i++)
@@ -339,6 +346,7 @@ namespace CookBook
             if (CookBook.IsPoolingEnabled)
             {
                 RefreshAlliedPhysicalCache(pruneStale: true);
+                DebugLog.Trace(_log, $"OnGlobalInventoryChanged: Plaey left {pmb.networkUser.userName}.");
             }
         }
 
@@ -361,10 +369,26 @@ namespace CookBook
         //--------------------------------------- Snapshot Logic  ----------------------------------------
         private static void EmitSnapshotNow()
         {
-            if (!_active || _localInventory == null) return;
+            if (!_active)
+            {
+                return;
+            }
+
+            if (_localInventory == null)
+            {
+                DebugLog.Trace(_log, "EmitSnapshotNow: _localInventory is NULL. Attempting late-bind before emit.");
+                if (!TryBindFromExistingBodies())
+                {
+                    DebugLog.Trace(_log, "EmitSnapshotNow aborted: Could not find local inventory to snapshot.");
+                    return;
+                }
+            }
 
             if (!BuildSnapshotIfNeeded(out var snapshotBuilt))
+            {
+                DebugLog.Trace(_log, "EmitSnapshotNow: No changes required a new snapshot. Skipping invoke.");
                 return;
+            }
 
             int count = _pendingChanged.Count;
             if (_emitBuffer == null || _emitBuffer.Length < count)
@@ -412,7 +436,11 @@ namespace CookBook
             }
 
             if (!_itemsDirty && !dronesWereDirty && !remoteWasDirty && !tradesWereDirty && _hasSnapshot && !pendingOnly)
+            {
                 return false;
+            }
+
+            DebugLog.Trace(_log, $"BuildSnapshotIfNeeded: Rebuilding (Items:{_itemsDirty}, Drones:{_dronesDirty}, Remote:{_remoteItemsDirty}, Trade:{_tradeDirty}, Force:{_forceRebuildPending})");
 
             // ---------------- Drones ----------------
             if (dronesWereDirty || _cachedGlobalDronePotential == null)
@@ -676,6 +704,7 @@ namespace CookBook
             var networkUser = body.master?.playerCharacterMasterController?.networkUser;
             if (networkUser && networkUser.localUser == GetLocalUser())
             {
+                DebugLog.Trace(_log, $"OnBodyStart: Local body detected ({body.name}). Binding inventory.");
                 RebindLocal(body.inventory);
                 _cachedLocalPhysical = GetUnifiedStacksFor(body.inventory);
 
@@ -687,7 +716,7 @@ namespace CookBook
                 _remoteItemsDirty = true;
                 _tradeDirty = true;
                 MarkForceRebuild();
-                QueueEmit("OnBodyStart");
+                QueueEmit("OnBodyStart: Local");
             }
 
             if (!CookBook.IsDroneScrappingEnabled) return;
@@ -700,14 +729,22 @@ namespace CookBook
         {
             if (!_active || _isTransitioning || body == null) return;
 
+            var master = body.master;
+            if (master && _localInventory && master.inventory == _localInventory)
+            {
+                DebugLog.Trace(_log, "OnBodyDestroyed: Local player died or body destroyed. Nulling local inventory.");
+                _localInventory = null;
+            }
+
             if (CookBook.IsPoolingEnabled && IsPlayerBody(body, out var deadMaster))
             {
                 if (RemoveAlliedFromCache(deadMaster))
                 {
+                    DebugLog.Trace(_log, "OnBodyDestroyed: Allied body destroyed. Removing from cache.");
                     _remoteItemsDirty = true;
                     MarkForceRebuild();
 
-                    QueueEmit("OnBodyDestroyed: Removed allied cache");
+                    QueueEmit("OnBodyDestroyed: Allied");
                 }
             }
 
@@ -933,7 +970,7 @@ namespace CookBook
 
         private static void QueueEmit(string trigger)
         {
-            if (!_active || _localInventory == null) return;
+            if (!_active) return;
 
             EnsureRunner();
             CancelPendingEmit();

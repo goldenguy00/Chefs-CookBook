@@ -17,14 +17,13 @@ namespace CookBook
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "rainorshine";
         public const string PluginName = "CookBook";
-        public const string PluginVersion = "1.2.10";
+        public const string PluginVersion = "1.3.0";
 
         internal static ManualLogSource Log;
 
         public static ConfigEntry<int> MaxDepth;
         public static ConfigEntry<int> MaxChainsPerResult;
         public static ConfigEntry<int> MaxBridgeItemsPerChain;
-        public static ConfigEntry<int> MaxProducersPerBridge;
         public static ConfigEntry<int> ComputeThrottleMs;
         public static ConfigEntry<string> TierOrder;
         public static ConfigEntry<KeyboardShortcut> AbortKey;
@@ -64,18 +63,6 @@ namespace CookBook
                 "Show Corrupted Results",
                 true,
                 "Display corrupted versions of craft results if corrupt version already owned."
-            );
-            DebugMode = Config.Bind<bool>(
-                "General",
-                "Enable Debug Mode",
-                true,
-                "When enabled, the console will show detailed logging of the backend, excluding culling logic (for spam reasons). Useful for debugging."
-            );
-            LogCraftMode = Config.Bind<bool>(
-                "General",
-                "Enable Craft Logging",
-                false,
-                "When enabled, the console will show logging of all culled chains. Useful when modifying the traversal algorithm."
             );
 
             AllowMultiplayerPooling = Config.Bind(
@@ -121,12 +108,20 @@ namespace CookBook
                 50,
                 "Maximum number of bridges between recipes within a single result, allows crafts to request intermediate items if it satisfies a later demand. Higher values yields a more complete search but increases compute time and memory usage."
             );
-            MaxProducersPerBridge = Config.Bind(
-                "Performance",
-                "Max Routes Per Bridge",
-                4,
-                "Maximum number of unique parallel paths to inject for each added item bridge. Higher values yields a more complete search but increases compute time and memory usage."
+
+            DebugMode = Config.Bind<bool>(
+                "Logging",
+                "Enable Debug Mode",
+                true,
+                "When enabled, the console will show detailed logging of the backend, excluding culling logic (for spam reasons). Useful for debugging."
             );
+            LogCraftMode = Config.Bind<bool>(
+                "Logging",
+                "Enable Craft Logging",
+                false,
+                "When enabled, the console will show logging of all culled chains. Useful when modifying the traversal algorithm."
+            );
+
             InternalSortOrder = Config.Bind(
                 "Tier Sorting",
                 "Indexing Sort Mode",
@@ -139,8 +134,6 @@ namespace CookBook
                 "FoodTier,NoTier,Equipment,Boss,Tier3,Tier2,Tier1,VoidTier3,VoidTier2,VoidTier1,Lunar",
                 "The CSV order of item tiers for sorting. Tiers earlier in the list appear higher in the UI."
             );
-
-
 
             TierManager.Init(Log);
             RegisterAssets.Init();
@@ -204,9 +197,7 @@ namespace CookBook
 
             PreventCorruptedCrafting.SettingChanged += StateController.OnPreventCorruptedCraftingChanged;
             ShowCorruptedResults.SettingChanged += StateController.OnShowCorruptedResultsChanged;
-            MaxDepth.SettingChanged += StateController.OnMaxDepthChanged;
-            MaxProducersPerBridge.SettingChanged += StateController.OnMaxProducersPerBridgeChanged;
-            MaxBridgeItemsPerChain.SettingChanged += StateController.OnMaxBridgeItemsPerChainChanged;
+            MaxDepth.SettingChanged += StateController.OnMaxDepthChanged; MaxBridgeItemsPerChain.SettingChanged += StateController.OnMaxBridgeItemsPerChainChanged;
 
             MaxChainsPerResult.SettingChanged += StateController.OnMaxChainsPerResultChanged;
             InternalSortOrder.SettingChanged += TierManager.OnTierPriorityChanged;
@@ -228,7 +219,6 @@ namespace CookBook
             ShowCorruptedResults.SettingChanged -= StateController.OnShowCorruptedResultsChanged;
             MaxDepth.SettingChanged -= StateController.OnMaxDepthChanged;
             MaxChainsPerResult.SettingChanged -= StateController.OnMaxChainsPerResultChanged;
-            MaxProducersPerBridge.SettingChanged -= StateController.OnMaxProducersPerBridgeChanged;
             MaxBridgeItemsPerChain.SettingChanged -= StateController.OnMaxBridgeItemsPerChainChanged;
 
             RecipeProvider.OnRecipesBuilt -= StateController.OnRecipesBuilt;
@@ -308,7 +298,7 @@ namespace CookBook
         }
         public static void CraftTrace(ManualLogSource log, string message)
         {
-            if (CookBook.isLogCraftMode)
+            if (!CookBook.isLogCraftMode)
                 return;
 
             log.LogDebug(message);

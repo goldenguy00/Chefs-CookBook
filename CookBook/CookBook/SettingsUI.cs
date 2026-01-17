@@ -22,8 +22,7 @@ namespace CookBook
 
             ModSettingsManager.AddOption(new KeyBindOption(CookBook.AbortKey));
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.ShowCorruptedResults));
-            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.DebugMode));
-            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.LogCraftMode));
+
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.AllowMultiplayerPooling));
             ModSettingsManager.AddOption(new CheckBoxOption(CookBook.ConsiderDrones));
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxDepth, new IntSliderConfig
@@ -46,12 +45,6 @@ namespace CookBook
                 max = 100,
                 formatString = "{0}"
             }));
-            ModSettingsManager.AddOption(new IntSliderOption(CookBook.MaxProducersPerBridge, new IntSliderConfig
-            {
-                min = 1,
-                max = 20,
-                formatString = "{0}"
-            }));
             ModSettingsManager.AddOption(new IntSliderOption(CookBook.ComputeThrottleMs, new IntSliderConfig
             {
                 min = 100,
@@ -59,9 +52,9 @@ namespace CookBook
                 formatString = "{0}ms"
             }));
 
+            // --- Hierarchical Tier Sorting ---
             ModSettingsManager.AddOption(new ChoiceOption(CookBook.InternalSortOrder));
 
-            // --- Hierarchical Tier Sorting ---
             int tierCount = CookBook.TierPriorities.Count;
             string[] rankChoices = Enumerable.Range(1, tierCount).Select(i => i.ToString()).ToArray();
 
@@ -75,6 +68,9 @@ namespace CookBook
                     description = $"Set sorting priority for {friendlyName} items."
                 }));
             }
+
+            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.DebugMode));
+            ModSettingsManager.AddOption(new CheckBoxOption(CookBook.LogCraftMode));
 
             _initialized = true;
         }

@@ -177,11 +177,12 @@ namespace CookBook
 
             if (BatchMode)
             {
-                DebugLog.Trace(_log, "Inventory Changed, but craft is in progress, skipping rebuild.");
                 return;
             }
+
             QueueThrottledCompute(snapshot, changedIndices, changedcount, forceRebuild);
         }
+
 
         private static void OnCraftablesUpdated(List<CraftPlanner.CraftableEntry> craftables, InventorySnapshot snap)
         {
@@ -211,16 +212,6 @@ namespace CookBook
         }
 
         internal static void OnMaxChainsPerResultChanged(object _, EventArgs __)
-        {
-            if (_planner == null) return;
-
-            if (IsChefStage())
-            {
-                QueueThrottledCompute(_newestSnapshot, null, 0, true);
-            }
-        }
-
-        internal static void OnMaxProducersPerBridgeChanged(object _, EventArgs __)
         {
             if (_planner == null) return;
 
@@ -286,7 +277,6 @@ namespace CookBook
             CraftingExecutionHandler.Abort();
             InventoryTracker.Pause();
 
-            _planner = null;
             _newestCraftables.Clear();
             _newestCraftables.TrimExcess();
 

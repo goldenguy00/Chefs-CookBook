@@ -1,12 +1,13 @@
-﻿#if COOKBOOK_PERF
+﻿//#define COOKBOOK_TRACE_LOGS
 using System;
 using System.Diagnostics;
 using System.Threading;
 using BepInEx.Logging;
 
+
 namespace CookBook
 {
-    public static class PerfProfile
+    public static partial class PerfProfile
     {
         public enum Region
         {
@@ -27,7 +28,7 @@ namespace CookBook
             CandidateLoopOverhead,
             Count
         }
-
+#if COOKBOOK_PERF
         private static long[] _incTicks = new long[(int)Region.Count];
         private static long[] _excTicks = new long[(int)Region.Count];
         private static int[] _calls = new int[(int)Region.Count];
@@ -50,6 +51,7 @@ namespace CookBook
 
             public void Reset() => Depth = 0;
 
+            [Conditional("COOKBOOK_PERF")]
             public void Push(Region r, long t0)
             {
                 if (Depth >= Frames.Length)
@@ -114,7 +116,7 @@ namespace CookBook
         }
 
         public static Scope Measure(Region r) => new Scope(r);
-
+        [Conditional("COOKBOOK_PERF")]
         public static void LogSummary(ManualLogSource log, int topN = 12, bool sortByExclusive = true)
         {
             if (log == null) return;
@@ -175,6 +177,90 @@ namespace CookBook
                 log.LogInfo($"[Perf] {(Region)idx,-20} inc={incMs,8:F2}ms ({pctInc,6:F2}%)  exc={excMs,8:F2}ms ({pctExc,6:F2}%)  calls={calls}");
             }
         }
+#else
+        public static void Reset()
+        { }
+
+        private sealed class ScopeStack
+        {
+            public int Depth;
+            public Frame[] Frames;
+
+            public void Reset() => Depth = 0;
+
+            [Conditional("COOKBOOK_PERF")]
+            public void Push(Region r, long t0) { }
+            public Frame Pop() => Frames[--Depth];
+        }
+
+        private struct Frame
+        { }
+
+        private static readonly ThreadLocal<ScopeStack> _stack = new ThreadLocal<ScopeStack>(() => new ScopeStack());
+        public readonly struct Scope : IDisposable
+        {
+            public Scope(Region r) { }
+            public void Dispose() { }
+        }
+
+        public static Scope Measure(Region r) => new Scope(r);
+
+        [Conditional("COOKBOOK_PERF")]
+        public static void LogSummary(ManualLogSource log, int topN = 0, bool sortByExclusive = true) { }
+#endif
+    }
+    public static partial class PerfProfile
+    {
+#if COOKBOOK_TRACE_LOGS
+        [Conditional("COOKBOOK_TRACE_LOGS")]
+        public static void TraceChainDrop(
+            ManualLogSource log,
+            string stage,
+            string reason,
+            Func<string> chainSummary,
+            Func<string> candidateName = null)
+        {
+            if (log == null) return;
+
+            string chainText = chainSummary != null ? chainSummary() : "<null>";
+            if (candidateName != null)
+            {
+                string cand = candidateName();
+                log.LogInfo($"[Planner][{stage}] DROP: {reason} | chain={chainText} | cand={cand}");
+            }
+            else
+            {
+                log.LogInfo($"[Planner][{stage}] DROP: {reason} | chain={chainText}");
+            }
+        }
+
+        [Conditional("COOKBOOK_TRACE_LOGS")]
+        public static void TraceChainAdd(
+            ManualLogSource log,
+            string stage,
+            Func<string> chainSummary)
+        {
+            if (log == null) return;
+
+            string chainText = chainSummary != null ? chainSummary() : "<null>";
+            log.LogInfo($"[Planner][{stage}] ADD: chain={chainText}");
+        }
+#else
+        [Conditional("COOKBOOK_TRACE_LOGS")]
+        public static void TraceChainDrop(
+           ManualLogSource log,
+           string stage,
+           string reason,
+           Func<string> chainSummary,
+           Func<string> candidateName = null)
+        { }
+
+        [Conditional("COOKBOOK_TRACE_LOGS")]
+        public static void TraceChainAdd(
+            ManualLogSource log,
+            string stage,
+            Func<string> chainSummary)
+        { }
+#endif
     }
 }
-#endif

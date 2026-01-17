@@ -3,11 +3,36 @@ Dates are listed in `MM/DD/YY` format.
 
 ---
 
-## v1.3.0 - 1/12/26
+## v1.3.0 - 1/17/26
+### Added
+- Added a border around the adjustable repeat quantity and category filter buttons in the CookBook due to a certain individual's complaints.
+- Implemented a reflection-based interop system for CleanerChef, automatically synchronizing "Prevent Corrupted Crafting" logic to ensure compatibility and prevent logic conflicts.
 ### Changed
-- Completely rewrote craftplanner algorithm, now operates on an adjacency basis to reduce the search space dramatically. Improved search completeness AND improved performance by 56%.
+- Complete CraftPlanner Rewrite
+	- Now leverages an adjacency-based search algorithm that explores paths based on current inventory surplus rather than checking every recipe blindly.
+- Performance & Memory: Reduced worst-case compute time by 74% (570ms -> 150ms).
+	- Pre-computed bi-directional "Consumer/Producer" indices to enable instant pathfinding.
+	- Flat Data Structures: Eliminated collection-based recipes in favor of fixed-field structs to maximize CPU cache efficiency.
+	- Replacing Dictionary-based inventory tracking with lightweight Delta-structs.
+	- Implementing Bitmask filtering for fast recipe validation.
+	- Eliminating LINQ overhead in the hot loop via reusable buffer arrays.
+	- Reduced RecipeChain overhead by only generating step-lists at execution time.
+- Search Precision
+	- Introduced a Tiered Bucket Dominance system (Pareto optimization) to ensure the planner finds the absolute cheapest paths without wasting cycles on redundant chains.
+	- Unified ingredient permutations (A+B vs B+A) to further shrink the search space.
+- User Levers
+	- Added configuration options to tune bridge-item precision.
+- State Tracking
+	- Optimized stage-presence detection by caching Chef-station status, eliminating scene-wide object searches.
+	- Introduced an Epoch-based tracking system for throttled computations, ensuring the UI always displays the result of the most recent inventory state and preventing race conditions.
+	- Synchronized UI events to pass immutable inventory snapshots alongside craftable results, ensuring accuracy and eliminating visual desyncs.
 ### Fixed
-- globalinventorychanged now doesn't falsely fire when a nonplayer dies
+- Fixed a bug where the CraftPlanner would wrongly null out on stage end, causing an empty crafting menu.
+- Mod settings (Drone Scrap/Pooling) now update the UI instantly when changed in the menu.
+- Inventory Lifecycle Management
+	- Refactored state management to cleanly handle player joins, leaves, and deaths without stale data or "ghost" inventories.
+- Drone Tracking
+	- Implemented a unique Owner-Scoped Key system to fix drones being double-counted or lost during combat.
 
 ---
 
